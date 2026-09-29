@@ -51,7 +51,13 @@ import json
 import sys
 
 items = json.load(sys.stdin).get("items", [])
-items.sort(key=lambda item: item.get("metadata", {}).get("creationTimestamp", ""))
+items.sort(
+    key=lambda item: (
+        item.get("metadata", {}).get("labels", {}).get("volcano.sh/task-spec")
+        != "master",
+        item.get("metadata", {}).get("creationTimestamp", ""),
+    )
+)
 running = [item for item in items if item.get("status", {}).get("phase") == "Running"]
 selected = running[0] if running else (items[0] if items else None)
 if selected:
