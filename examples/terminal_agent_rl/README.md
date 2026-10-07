@@ -80,6 +80,16 @@ bash examples/terminal_agent_rl/convert_nex_n25_mini.sh
 
 脚本会生成 `${HF_CHECKPOINT}_torch_dist`，已存在完整 checkpoint 时幂等退出；发现不完整目录时会拒绝覆盖。
 
+## GPU 冒烟
+
+在专用 8×H100 Pod 内依次验证 SGLang TP=2 和一条真实 Slime/E2B rollout：
+
+```bash
+JOB_NAME=<NorthJob JobAlias> bash examples/terminal_agent_rl/run_gpu_smokes.sh
+```
+
+第一阶段要求普通对话和强制 `bash` tool call 都通过 OpenAI-compatible API；第二阶段使用 `--debug-rollout-only`，并检查落盘样本的 token、loss mask、rollout logprob、reward 和确定性 verifier verdict。总回执写入 `RUN/<job>/gpu-smokes-receipt.json`。
+
 ## 多机训练
 
 默认拓扑为 4×8 H100，其中 2 节点训练 actor、2 节点运行 8 个 TP=2 rollout engine：
