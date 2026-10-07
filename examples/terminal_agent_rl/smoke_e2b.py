@@ -15,6 +15,7 @@ from .sandbox import NextaskE2BSandbox
 async def run(package: Path, template_identity: str) -> dict:
     paths = runtime.session_paths(f"e2b-smoke-{secrets.token_hex(6)}")
     cleanup_confirmed = False
+    result: dict | None = None
     try:
         async with NextaskE2BSandbox(template_identity, timeout=runtime.CONFIG.grade_timeout_sec + 900) as sandbox:
             materialized = await runtime.materialize_workspace(
@@ -39,7 +40,7 @@ async def run(package: Path, template_identity: str) -> dict:
                 raise RuntimeError(f"candidate snapshot cleanup was not confirmed: {grade!r}")
             if grade.get("ok") is not True or grade.get("verdict") not in {"EQUAL", "NON_EQUAL"}:
                 raise RuntimeError(f"verifier was not determinate: {grade!r}")
-            return {
+            result = {
                 "ok": True,
                 "template_identity": template_identity,
                 "public_asset_count": materialized.get("asset_count"),
@@ -49,8 +50,12 @@ async def run(package: Path, template_identity: str) -> dict:
                 "max_score": grade.get("max_score"),
                 "score_ratio": grade.get("score_ratio"),
                 "candidate_snapshot_cleanup_confirmed": True,
-                "live_sandbox_cleanup": "context_manager",
             }
+        if sandbox.cleanup_confirmed is not True:
+            raise RuntimeError("live sandbox cleanup was not confirmed")
+        assert result is not None
+        result["live_sandbox_cleanup_confirmed"] = True
+        return result
     finally:
         if not cleanup_confirmed:
             await runtime.cleanup_candidate(paths)

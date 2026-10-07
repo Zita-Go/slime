@@ -35,6 +35,7 @@ import examples.terminal_agent_rl.bridge as bridge  # noqa: E402
 import examples.terminal_agent_rl.generate as generate  # noqa: E402
 from examples.terminal_agent_rl.agent import TerminalToolAgent  # noqa: E402
 from examples.terminal_agent_rl.e2b_config import resolve_e2b_connection  # noqa: E402
+from examples.terminal_agent_rl.sandbox import NextaskE2BSandbox  # noqa: E402
 from examples.terminal_agent_rl import runtime  # noqa: E402
 from slime.agent.adapters import common as adapters_common  # noqa: E402
 from slime.agent import sandbox as sandbox_module  # noqa: E402
@@ -309,3 +310,31 @@ def test_e2b_credentials_load_from_protected_file(tmp_path: Path, monkeypatch: p
     config.chmod(0o644)
     with pytest.raises(RuntimeError, match="permissions"):
         resolve_e2b_connection()
+
+
+def test_nextask_sandbox_requires_confirmed_live_cleanup() -> None:
+    class FakeRemote:
+        def __init__(self, error: Exception | None = None) -> None:
+            self.error = error
+
+        async def kill(self):
+            if self.error is not None:
+                raise self.error
+            return False  # already absent is a confirmed cleanup state
+
+    async def run_case():
+        sandbox = NextaskE2BSandbox("template")
+        sandbox._sb = FakeRemote()
+        sandbox.sandbox_id = "sandbox-1"
+        await sandbox.__aexit__(None, None, None)
+        assert sandbox.cleanup_confirmed is True
+
+        failed = NextaskE2BSandbox("template")
+        failed._sb = FakeRemote(RuntimeError("control plane unavailable"))
+        failed.sandbox_id = "sandbox-2"
+        failed.rpc_retries = 1
+        with pytest.raises(RuntimeError, match="cleanup was not confirmed"):
+            await failed.__aexit__(None, None, None)
+        assert failed.cleanup_confirmed is False
+
+    asyncio.run(run_case())

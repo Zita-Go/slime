@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from slime.agent.sandbox import E2BSandbox
 
 from .e2b_config import resolve_e2b_connection
+
+logger = logging.getLogger(__name__)
 
 
 class NextaskE2BSandbox(E2BSandbox):
@@ -35,4 +39,19 @@ class NextaskE2BSandbox(E2BSandbox):
             ),
         )
         self.sandbox_id = self._sb.sandbox_id
+        self.cleanup_confirmed = False
         return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._sb is None:
+            self.cleanup_confirmed = True
+            return
+        try:
+            # Both True (killed) and False (already absent) are authoritative
+            # absence states in the E2B SDK.
+            await self._rpc_retry("kill", lambda: self._sb.kill())
+            self.cleanup_confirmed = True
+        except Exception as cleanup_error:
+            self.cleanup_confirmed = False
+            logger.error("[terminal_agent_rl] live sandbox cleanup failed: %s", self.sandbox_id)
+            raise RuntimeError(f"live E2B sandbox cleanup was not confirmed: {self.sandbox_id}") from cleanup_error
