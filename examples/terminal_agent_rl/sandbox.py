@@ -2,42 +2,9 @@
 
 from __future__ import annotations
 
-import os
-
 from slime.agent.sandbox import E2BSandbox
 
-
-def _first_env(*names: str) -> str | None:
-    for name in names:
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    return None
-
-
-def resolve_e2b_connection() -> tuple[str, str | None, str | None]:
-    api_key = _first_env(
-        "NEXTASK_BENCH_E2B_API_KEY",
-        "NEXTASK_SOLVE_E2B_API_KEY",
-        "NEXTASK_GEN_E2B_API_KEY",
-        "E2B_API_KEY",
-        "E2B_API_KEY_CODEX",
-    )
-    if not api_key:
-        raise RuntimeError("E2B API key is not configured")
-    api_url = _first_env(
-        "NEXTASK_BENCH_E2B_API_URL",
-        "NEXTASK_SOLVE_E2B_API_URL",
-        "NEXTASK_GEN_E2B_API_URL",
-        "E2B_API_URL",
-    )
-    domain = _first_env(
-        "NEXTASK_BENCH_E2B_DOMAIN",
-        "NEXTASK_SOLVE_E2B_DOMAIN",
-        "NEXTASK_GEN_E2B_DOMAIN",
-        "E2B_DOMAIN",
-    )
-    return api_key, api_url, domain
+from .e2b_config import resolve_e2b_connection
 
 
 class NextaskE2BSandbox(E2BSandbox):

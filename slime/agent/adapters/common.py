@@ -61,6 +61,7 @@ def _render_token_ids(
     *,
     tools: list[dict] | None,
     add_generation_prompt: bool = True,
+    chat_template_kwargs: dict[str, Any] | None = None,
 ) -> list[int]:
     """Render a chat-message list to token ids with the served chat template."""
     enc = tokenizer.apply_chat_template(
@@ -68,6 +69,7 @@ def _render_token_ids(
         tools=tools,
         tokenize=True,
         add_generation_prompt=add_generation_prompt,
+        **(chat_template_kwargs or {}),
     )
     ids = enc["input_ids"] if hasattr(enc, "__getitem__") and "input_ids" in enc else enc
     return list(ids)
@@ -339,7 +341,16 @@ class BaseAdapter:
         t0 = time.monotonic()
         try:
             translated, tools_schema = self._translate(body)
-            prompt_ids = _render_token_ids(translated, tok, tools=tools_schema, add_generation_prompt=True)
+            template_kwargs = {}
+            if body.get("reasoning_effort") is not None:
+                template_kwargs["reasoning_effort"] = body["reasoning_effort"]
+            prompt_ids = _render_token_ids(
+                translated,
+                tok,
+                tools=tools_schema,
+                add_generation_prompt=True,
+                chat_template_kwargs=template_kwargs,
+            )
 
             turn = await call_sglang_generate(prompt_ids, s, body, adapter=self, session_id=sid)
 

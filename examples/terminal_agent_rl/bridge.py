@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
@@ -106,9 +107,9 @@ def _build_export_row(
     if reference_state.baseline_workspace_digest != replay.workspace_manifest.workspace_digest:
         raise BridgeError(f"reference workspace identity mismatch: {package}")
 
-    # package_dir/reference_dir remain host-only metadata consumed by this
-    # bridge.  generate.py never writes either path or their contents into the
-    # solver sandbox.
+    # package_dir remains host-only metadata consumed by this bridge.
+    # generate.py never writes the path or package contents into the solver
+    # sandbox; the reference path is deliberately not serialized at all.
     return {
         "prompt": prompt,
         "label": task_name,
@@ -118,7 +119,6 @@ def _build_export_row(
             "task_id": task_id,
             "task_name": task_name,
             "package_dir": str(package),
-            "reference_dir": str(reference_dir),
             "template_identity": replay.descriptor.template_identity,
             "workspace_digest": replay.workspace_manifest.workspace_digest,
             "package_schema": replay.descriptor.schema_version,
@@ -223,49 +223,6 @@ def _connect_sandbox(sandbox_id: str, *, timeout: int) -> Any:
     return Sandbox.connect(sandbox_id, timeout=timeout, **options)
 
 
-def _pin_codex_runtime() -> None:
-    version = os.getenv("TERMINAL_RL_CODEX_VERSION", "0.154.0").strip()
-    if not version or any(ch not in "0123456789.-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" for ch in version):
-        raise BridgeError(f"invalid TERMINAL_RL_CODEX_VERSION: {version!r}")
-    os.environ.setdefault(
-        "NEXTASK_E2B_CODEX_UPDATE_CMD",
-        "npm install -g "
-        f"@openai/codex@{version} @openai/codex-sdk@{version} "
-        "--no-audit --no-fund --silent"
-        " && mkdir -p /tmp/codex_runner/node_modules"
-        " && rm -rf /tmp/codex_runner/node_modules/@openai"
-        ' && ln -s "$(npm root -g)/@openai" /tmp/codex_runner/node_modules/@openai'
-        " && codex --version",
-    )
-
-
-def prepare_sandbox(sandbox_id: str, package: Path) -> dict[str, Any]:
-    """Install the same Node/Codex runtime used by NexTask's solver flow."""
-
-    from pipeline.dynamic_verification.package import load_dynamic_verification_package
-    from pipeline.e2b_codex import _prepare_codex_runtime
-
-    package = _require_real_dir(Path(package), label="package")
-    replay = load_dynamic_verification_package(package)
-    _validate_replay(replay, package)
-    _pin_codex_runtime()
-    sandbox = _connect_sandbox(sandbox_id, timeout=replay.runtime_config.sandbox_timeout_s)
-    _prepare_codex_runtime(sandbox, baked=False)
-    result = sandbox.commands.run(
-        'export PATH="/usr/local/lib/nodejs/node/bin:$PATH"; codex --version',
-        timeout=60,
-        user="root",
-    )
-    version = str(result.stdout or "").strip().splitlines()[-1]
-    return {
-        "ok": True,
-        "command": "prepare",
-        "sandbox_id": sandbox_id,
-        "template_identity": replay.descriptor.template_identity,
-        "codex_version": version,
-    }
-
-
 def _remove_terminal_framework_paths(sandbox: Any) -> list[str]:
     paths = (
         "/root/.codex",
@@ -278,6 +235,57 @@ def _remove_terminal_framework_paths(sandbox: Any) -> list[str]:
     command = "rm -rf -- " + " ".join(shlex.quote(path) for path in paths)
     sandbox.commands.run(command, timeout=60, user="root")
     return list(paths)
+
+
+def materialize_workspace(*, sandbox_id: str, package: Path) -> dict[str, Any]:
+    """Upload the exact Final package public closure used by NexTask Bench."""
+
+    from pipeline.bench import _load_public_assets
+    from pipeline.dynamic_verification.package import load_dynamic_verification_package
+    from pipeline.e2b_utils import e2b_upload_tar, tar_gz_directory
+
+    package = _require_real_dir(Path(package), label="package")
+    replay = load_dynamic_verification_package(package)
+    _validate_replay(replay, package)
+    public_assets, public_workspace_digest = _load_public_assets(package, keep_verify=False)
+    sandbox = _connect_sandbox(sandbox_id, timeout=replay.runtime_config.sandbox_timeout_s)
+
+    with tempfile.TemporaryDirectory(prefix="terminal-rl-public-workspace-") as tmp_name:
+        export_root = Path(tmp_name)
+        for asset in public_assets:
+            relative = Path(asset["path"])
+            if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                raise BridgeError(f"unsafe workspace target: {asset['path']!r}")
+            source = package / relative
+            destination = export_root / relative
+            if asset["node_type"] == "empty_dir":
+                if source.is_symlink() or not source.is_dir() or any(source.iterdir()):
+                    raise BridgeError(f"workspace empty-dir asset changed: {relative}")
+                destination.mkdir(parents=True, exist_ok=False)
+            elif asset["node_type"] == "file":
+                if source.is_symlink() or not source.is_file():
+                    raise BridgeError(f"workspace file asset changed: {relative}")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+            else:
+                raise BridgeError(f"unsupported solver-visible node type {asset['node_type']!r}: {relative}")
+        archive = tar_gz_directory(export_root)
+
+    sandbox.commands.run("rm -rf -- /app && mkdir -p /app", timeout=60, user="root")
+    e2b_upload_tar(sandbox, archive, "/app")
+    check = sandbox.commands.run("test -f /app/task.txt && echo READY", timeout=30, user="root")
+    if str(check.stdout or "").strip() != "READY":
+        raise BridgeError("materialized workspace has no /app/task.txt")
+    return {
+        "ok": True,
+        "command": "materialize",
+        "sandbox_id": sandbox_id,
+        "template_identity": replay.descriptor.template_identity,
+        "workspace_digest": replay.workspace_manifest.workspace_digest,
+        "public_workspace_digest": public_workspace_digest,
+        "asset_count": len(public_assets),
+        "archive_bytes": len(archive),
+    }
 
 
 def _indeterminate(error: str, *, retryable: bool = True, failure_origin: str = "sandbox_infra") -> dict[str, Any]:
@@ -431,10 +439,6 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--collection", type=Path, required=True)
     export.add_argument("--output", type=Path, required=True)
 
-    prepare = sub.add_parser("prepare", help="prepare Codex inside one live E2B sandbox")
-    prepare.add_argument("--sandbox-id", required=True)
-    prepare.add_argument("--package", type=Path, required=True)
-
     grade = sub.add_parser("grade", help="snapshot and grade one live E2B candidate")
     grade.add_argument("--sandbox-id", required=True)
     grade.add_argument("--package", type=Path, required=True)
@@ -444,6 +448,10 @@ def _parser() -> argparse.ArgumentParser:
 
     cleanup = sub.add_parser("cleanup", help="delete a temporary candidate snapshot if present")
     cleanup.add_argument("--candidate-dir", type=Path, required=True)
+
+    materialize = sub.add_parser("materialize", help="upload only solver-visible package assets into /app")
+    materialize.add_argument("--sandbox-id", required=True)
+    materialize.add_argument("--package", type=Path, required=True)
     return parser
 
 
@@ -452,8 +460,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         if args.command == "export":
             payload = export_collection(args.collection, args.output)
-        elif args.command == "prepare":
-            payload = prepare_sandbox(args.sandbox_id, args.package)
+        elif args.command == "materialize":
+            payload = materialize_workspace(sandbox_id=args.sandbox_id, package=args.package)
         elif args.command == "grade":
             payload = grade_sandbox(
                 sandbox_id=args.sandbox_id,

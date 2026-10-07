@@ -11,7 +11,6 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-import aiohttp
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +33,8 @@ if not hasattr(asyncio, "timeout"):
 
 import examples.terminal_agent_rl.bridge as bridge  # noqa: E402
 import examples.terminal_agent_rl.generate as generate  # noqa: E402
+from examples.terminal_agent_rl.agent import TerminalToolAgent  # noqa: E402
+from examples.terminal_agent_rl.e2b_config import resolve_e2b_connection  # noqa: E402
 from examples.terminal_agent_rl import runtime  # noqa: E402
 from slime.agent.adapters import common as adapters_common  # noqa: E402
 from slime.agent import sandbox as sandbox_module  # noqa: E402
@@ -79,24 +80,6 @@ def _sample(package_dir: Path) -> Sample:
     )
 
 
-async def _codex_agent(env: dict[str, str]) -> int:
-    base_url = env["OPENAI_BASE_URL"]
-    token = env["OPENAI_API_KEY"]
-    history = [{"role": "user", "content": "solve the terminal task"}]
-    async with aiohttp.ClientSession(trust_env=False) as session:
-        for _ in range(2):
-            async with session.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"model": "m", "max_tokens": 64, "messages": history},
-            ) as response:
-                payload = await response.json()
-            message = payload["choices"][0]["message"]
-            history.append({"role": "assistant", "content": message.get("content") or ""})
-            history.append({"role": "user", "content": "continue"})
-    return 0
-
-
 def _patch_rollout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grade: dict) -> FakeTokenizer:
     tokenizer = FakeTokenizer()
     monkeypatch.setattr(
@@ -104,7 +87,6 @@ def _patch_rollout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grade: dict)
         "CONFIG",
         dataclasses.replace(
             generate.CONFIG,
-            adapter_public_host="127.0.0.1",
             adapter_bind_host="127.0.0.1",
             adapter_port=0,
             rollout_guard_sec=60,
@@ -113,31 +95,28 @@ def _patch_rollout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grade: dict)
         ),
     )
     monkeypatch.setattr(generate, "load_tokenizer", lambda *args, **kwargs: tokenizer)
-    monkeypatch.setattr(generate, "NextaskE2BSandbox", FakeSandbox.factory(on_launch=_codex_agent))
+    monkeypatch.setattr(generate, "NextaskE2BSandbox", FakeSandbox.factory())
     monkeypatch.setattr(sandbox_module.asyncio, "sleep", _fast_sleep)
     monkeypatch.setattr(
         adapters_common,
         "call_sglang_generate",
         fake_call_sglang_generate(
-            [
-                ("inspect the machine", "stop", None),
-                ("task completed", "stop", None),
-            ],
+            [("task completed", "stop", None)],
             tokenizer,
         ),
     )
 
-    async def _prepare(**_kwargs):
-        return {"ok": True, "codex_version": "codex-cli test"}
-
     async def _grade(**_kwargs):
         return dict(grade)
+
+    async def _materialize(**_kwargs):
+        return {"ok": True, "asset_count": 1}
 
     async def _cleanup(_paths):
         return None
 
-    monkeypatch.setattr(runtime, "prepare_sandbox", _prepare)
     monkeypatch.setattr(runtime, "grade_sandbox", _grade)
+    monkeypatch.setattr(runtime, "materialize_workspace", _materialize)
     monkeypatch.setattr(runtime, "cleanup_candidate", _cleanup)
     monkeypatch.setattr(runtime, "cleanup_artifacts", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -168,7 +147,7 @@ def test_terminal_generate_closes_agent_loop_and_uses_partial_reward(tmp_path: P
     }
 
     async def run_case(monkeypatch: pytest.MonkeyPatch):
-        _patch_rollout(monkeypatch, tmp_path, grade)
+        tokenizer = _patch_rollout(monkeypatch, tmp_path, grade)
         samples = await generate.generate(_args(), _sample(package), {"max_new_tokens": 64})
         assert samples
         assert sum(float(sample.reward) for sample in samples) == pytest.approx(0.6)
@@ -176,6 +155,7 @@ def test_terminal_generate_closes_agent_loop_and_uses_partial_reward(tmp_path: P
         assert all(sum(sample.loss_mask or []) > 0 for sample in samples)
         assert all(sample.metadata["verifier_verdict"] == "NON_EQUAL" for sample in samples)
         assert all(sample.metadata["agent_exit_code"] == 0 for sample in samples)
+        assert tokenizer.template_kwargs == [{"reasoning_effort": "medium"}]
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         asyncio.run(run_case(monkeypatch))
@@ -223,6 +203,27 @@ def test_reward_requires_determinate_verdict_and_snapshot_cleanup() -> None:
         is None
     )
     assert generate._reward_from_grade({"ok": True, "verdict": "EQUAL"}) is None
+
+
+def test_terminal_bash_tool_returns_bounded_command_observation() -> None:
+    async def run_case():
+        sandbox = FakeSandbox(responses=[("printf demo", (7, "hello", "warning"))])
+        agent = TerminalToolAgent()
+        result = await agent._run_bash(
+            sandbox,
+            {
+                "function": {
+                    "name": "bash",
+                    "arguments": json.dumps({"command": "printf demo", "timeout": 10}),
+                }
+            },
+        )
+        assert "exit_code=7" in result
+        assert "hello" in result
+        assert "warning" in result
+        assert sandbox.exec_log == [("cd /app\nprintf demo", "root")]
+
+    asyncio.run(run_case())
 
 
 def test_export_collection_emits_only_public_prompt_and_host_metadata(tmp_path: Path) -> None:
@@ -281,4 +282,30 @@ def test_export_collection_emits_only_public_prompt_and_host_metadata(tmp_path: 
     row = json.loads(output.read_text(encoding="utf-8"))
     assert row["prompt"] == "Public task text."
     assert row["metadata"]["template_identity"] == "template-1"
+    assert "reference_dir" not in row["metadata"]
     assert "SECRET REFERENCE" not in json.dumps(row)
+
+
+def test_e2b_credentials_load_from_protected_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "NEXTASK_BENCH_E2B_API_KEY",
+        "NEXTASK_SOLVE_E2B_API_KEY",
+        "NEXTASK_GEN_E2B_API_KEY",
+        "E2B_API_KEY",
+        "E2B_API_KEY_CODEX",
+        "E2B_API_URL",
+        "E2B_DOMAIN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    config = tmp_path / "e2b.json"
+    config.write_text(
+        json.dumps({"api_key": "secret", "api_url": "https://e2b.example", "domain": "e2b.example"}),
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINAL_RL_E2B_CONFIG_FILE", str(config))
+    assert resolve_e2b_connection() == ("secret", "https://e2b.example", "e2b.example")
+
+    config.chmod(0o644)
+    with pytest.raises(RuntimeError, match="permissions"):
+        resolve_e2b_connection()

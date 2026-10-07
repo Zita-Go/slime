@@ -22,7 +22,7 @@ from slime.utils.processing_utils import load_tokenizer
 from slime.utils.types import Sample
 
 from . import runtime
-from .harness import RootCodexHarness
+from .agent import TerminalToolAgent
 from .sandbox import NextaskE2BSandbox
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,6 @@ TASK:
 
 @dataclass(frozen=True)
 class TerminalConfig:
-    adapter_public_host: str | None
     adapter_bind_host: str
     adapter_port: int
     fork_merge_threshold: int | None
@@ -51,12 +50,11 @@ class TerminalConfig:
         agent_budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "1800"))
         guard = int(os.environ.get("TERMINAL_RL_ROLLOUT_GUARD_SEC", "0") or 0)
         if guard <= 0:
-            guard = agent_budget + runtime.CONFIG.prepare_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
+            guard = agent_budget + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
         fork = int(value) if (value := os.environ.get("SLIME_FORK_MERGE_MAX_RESPONSE_TOKENS")) else None
         return cls(
-            adapter_public_host=os.environ.get("ADAPTER_PUBLIC_HOST"),
-            adapter_bind_host=os.environ.get("ADAPTER_BIND_HOST", "0.0.0.0"),
-            adapter_port=int(os.environ.get("ADAPTER_PORT", "18001")),
+            adapter_bind_host=os.environ.get("ADAPTER_BIND_HOST", "127.0.0.1"),
+            adapter_port=int(os.environ.get("ADAPTER_PORT", "0")),
             fork_merge_threshold=fork,
             agent_time_budget_sec=agent_budget,
             rollout_guard_sec=guard,
@@ -67,7 +65,7 @@ class TerminalConfig:
 
 CONFIG = TerminalConfig.from_env()
 _BOOT_SEM = asyncio.Semaphore(CONFIG.boot_concurrency)
-_HARNESS = RootCodexHarness()
+_AGENT = TerminalToolAgent()
 
 
 @asynccontextmanager
@@ -106,8 +104,6 @@ class _AdapterService(metaclass=SingletonMeta):
         self.max_context_len = int(getattr(args, "rollout_max_context_len", 0) or 0)
         self.tool_parser = getattr(args, "sglang_tool_call_parser", None) or None
         self.reasoning_parser = getattr(args, "sglang_reasoning_parser", None) or None
-        if not CONFIG.adapter_public_host:
-            raise RuntimeError("ADAPTER_PUBLIC_HOST must be reachable from the E2B sandboxes")
         sglang_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
         self.adapter = OpenAIAdapter(
             tokenizer=self.tokenizer,
@@ -126,7 +122,7 @@ class _AdapterService(metaclass=SingletonMeta):
                 "access_log_class": FilteredAccessLogger,
             },
         )
-        self.adapter_url = f"http://{CONFIG.adapter_public_host}:{self.app_handle.port}"
+        self.adapter_url = f"http://127.0.0.1:{self.app_handle.port}"
         logger.info(
             "[terminal_agent_rl] tokenizer=%s adapter=%s context=%d tool_parser=%s reasoning_parser=%s",
             args.hf_checkpoint,
@@ -208,17 +204,21 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
     try:
         async with asyncio.timeout(CONFIG.rollout_guard_sec):
             async with boot_task_sandbox(str(metadata["template_identity"]), item_id) as sandbox:
-                prepared = await runtime.prepare_sandbox(sandbox_id=sandbox.sandbox_id, package_dir=metadata["package_dir"])
-                if prepared.get("ok") is not True:
-                    raise runtime.BridgeInvocationError(f"sandbox preparation failed: {prepared!r}")
+                workspace = await runtime.materialize_workspace(
+                    sandbox_id=sandbox.sandbox_id,
+                    package_dir=metadata["package_dir"],
+                )
+                if workspace.get("ok") is not True:
+                    raise runtime.BridgeInvocationError(f"workspace materialization failed: {workspace!r}")
                 prompt = PROMPT_PREFIX + str(base_sample.prompt)
-                agent_exit_code = await _HARNESS.run(
+                agent_result = await _AGENT.run(
                     sandbox,
                     session_id=session_id,
                     adapter_url=state.adapter_url,
                     time_budget_sec=CONFIG.agent_time_budget_sec,
                     prompt=prompt,
                 )
+                agent_exit_code = agent_result.exit_code
                 grade = await runtime.grade_sandbox(
                     sandbox_id=sandbox.sandbox_id,
                     package_dir=metadata["package_dir"],
@@ -260,6 +260,7 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                 sample.metadata = {
                     **(sample.metadata or {}),
                     "agent_exit_code": agent_exit_code,
+                    "agent_turns": agent_result.turns,
                     "terminal_rollout_elapsed_s": elapsed,
                 }
             logger.info(

@@ -1,12 +1,13 @@
 # NexTask Terminal-Agent RL
 
-本目录把 NexTask RFC-0012 v3 动态题包接入 slime。训练时，模型通过 Codex CLI 在每题独立的 E2B 模板中操作真实终端；结束后由冻结的 NexTask runtime 创建候选快照，并使用题包自带的 shell-pairwise verifier 与参考快照比较。
+本目录把 NexTask RFC-0012 v3 动态题包接入 slime。训练时，rollout worker 在本地运行多轮 agent loop，模型通过 `bash` 工具操作每题独立的 E2B 模板；结束后由冻结的 NexTask runtime 创建候选快照，并使用题包自带的 shell-pairwise verifier 与参考快照比较。
 
 ## 安全边界
 
-- 模型只进入 `dynamic_verification_manifest.json` 冻结的 `template_identity`，并在模板内的 `/app` 工作。
+- 模型只能通过宿主侧 `bash` 工具进入 `dynamic_verification_manifest.json` 冻结的 `template_identity`；默认在模板内的 `/app` 工作。
+- 冻结模板只提供运行时；`bridge.py materialize` 直接复用 NexTask Bench 的严格 public-export 逻辑，以最终 `package_manifest.json` 的 `solver_visible + public_contract/public_workspace + public_workspace_digest` 为权威闭包上传 `/app`。即使旧 workspace manifest 错把 `verify.py` 标为可见，最终 package 的 `private_audit` 判定也会将它排除。
 - `reference_solution/`、`verify.py`、`test.sh`、动态 receipts 和 package manifest 始终留在宿主侧。
-- 数据 JSONL 中的 `package_dir` 与 `reference_dir` 是 rollout worker 的宿主侧 metadata；`generate.py` 不会把这些路径或内容写入模型沙箱。
+- 数据 JSONL 只保留 rollout worker 所需的宿主侧 `package_dir`，不序列化 `reference_dir`；`generate.py` 也不会把 package 路径或内容直接写入模型沙箱。
 - reward 只接受确定性结果：`EQUAL = 1`，`NON_EQUAL = score_ratio`；`INDETERMINATE`、E2B 故障和 framework integrity 故障会丢弃该轨迹，而不是误记为 0 分。
 - 每个候选先发布为短期 E2B snapshot，比较结束后立即删除。候选 snapshot 清理未确认时，该轨迹同样按基础设施故障丢弃。
 
@@ -40,11 +41,54 @@ bash examples/terminal_agent_rl/export_dataset.sh
 ```text
 JSONL metadata
   -> frozen E2B template (/app only)
-  -> Codex CLI <-> slime OpenAI adapter <-> SGLang actor
+  -> host-side bash tool loop <-> slime OpenAI adapter <-> SGLang actor
   -> sanitize framework credentials
   -> immutable candidate snapshot
   -> NexTask v3 candidate/reference pairwise verifier
   -> determinate reward or dropped infrastructure sample
 ```
 
-模型下载、Megatron checkpoint 转换、GPU smoke 和正式多机训练命令将在同目录的训练脚本中补齐。
+E2B 凭据不写入训练脚本或 Ray runtime JSON。训练任务只传递 `TERMINAL_RL_E2B_CONFIG_FILE` 路径；该文件必须是权限不宽于 `0600` 的普通 JSON 文件：
+
+```json
+{
+  "api_key": "<secret>",
+  "api_url": "https://...",
+  "domain": "..."
+}
+```
+
+内部 E2B 网关当前固定使用共享目录中的 `e2b 2.21.0`（wheel SHA-256 `360a55ff23335dd62ee5ca86c41dc55de597d73b846f5c2361f6eac6c712a371`）；训练脚本把该目录放在 Ray worker 的 `PYTHONPATH` 最前面，避免容器内较新的 SDK 调用不兼容接口。
+
+只验证 E2B public workspace 与 verifier 闭环、不加载模型时，可运行：
+
+```bash
+PYTHONPATH=/gpfs/users/i-zhangguoqiang/terminal-code/RL/vendor/e2b-2.21.0:$PWD \
+TERMINAL_RL_E2B_CONFIG_FILE=/gpfs/users/i-zhangguoqiang/terminal-code/RL/.secrets/nextask-e2b.json \
+python -m examples.terminal_agent_rl.smoke_e2b \
+  --package /path/to/final/task_xxx \
+  --template-identity '<template_identity>'
+```
+
+## 模型转换
+
+模型下载完成后，申请一台 8×H100 开发 Pod，在 Pod 内执行：
+
+```bash
+bash examples/terminal_agent_rl/convert_nex_n25_mini.sh
+```
+
+脚本会生成 `${HF_CHECKPOINT}_torch_dist`，已存在完整 checkpoint 时幂等退出；发现不完整目录时会拒绝覆盖。
+
+## 多机训练
+
+默认拓扑为 4×8 H100，其中 2 节点训练 actor、2 节点运行 8 个 TP=2 rollout engine：
+
+```bash
+MODE=train \
+TRAIN_SCRIPT=/gpfs/users/i-zhangguoqiang/terminal-code/RL/slime/examples/terminal_agent_rl/run_nex_n25_mini.sh \
+DRY_RUN=false \
+bash scripts/northjob/launch_slime_multinode.sh
+```
+
+NorthJob bootstrap 负责启动所有 Ray 节点；训练脚本只向现有 Ray dashboard 提交任务，不会重复 `ray start`。默认使用 fully-async rollout、GRPO、官方推荐的 `temperature=0.7/top_p=0.95/top_k=40`，并为 SGLang 设置 `qwen3` reasoning parser、`qwen3_coder` tool parser 和 `mamba-scheduler-strategy=extra_buffer`。

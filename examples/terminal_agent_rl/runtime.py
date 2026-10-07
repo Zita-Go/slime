@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .e2b_config import resolve_e2b_connection
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,7 +41,7 @@ class BridgeConfig:
     runtime_python: Path
     bridge_script: Path
     work_root: Path
-    prepare_timeout_sec: int
+    workspace_timeout_sec: int
     grade_timeout_sec: int
     cleanup_timeout_sec: int
     keep_artifacts: bool
@@ -52,18 +54,20 @@ class BridgeConfig:
                 "/gpfs/users/i-zhangguoqiang/terminal-code/NexTask-rfc0012-v3-runtime",
             )
         ).resolve()
+        # Do not resolve this symlink: it is the virtualenv entrypoint. Resolving
+        # it to the base interpreter drops the NexTask site-packages.
         runtime_python = Path(
             os.environ.get(
                 "NEXTASK_RUNTIME_PYTHON",
                 "/gpfs/users/i-zhangguoqiang/terminal-code/NexTask-rfc0012/.venv/bin/python",
             )
-        ).resolve()
+        ).expanduser()
         return cls(
             runtime_root=runtime_root,
             runtime_python=runtime_python,
             bridge_script=Path(__file__).with_name("bridge.py").resolve(),
             work_root=Path(os.environ.get("TERMINAL_RL_VERIFIER_WORK_ROOT", "/tmp/slime-terminal-agent")).resolve(),
-            prepare_timeout_sec=_positive_int("TERMINAL_RL_PREPARE_TIMEOUT_SEC", 1200),
+            workspace_timeout_sec=_positive_int("TERMINAL_RL_WORKSPACE_TIMEOUT_SEC", 600),
             grade_timeout_sec=_positive_int("TERMINAL_RL_GRADE_TIMEOUT_SEC", 2400),
             cleanup_timeout_sec=_positive_int("TERMINAL_RL_CLEANUP_TIMEOUT_SEC", 120),
             keep_artifacts=_truthy("TERMINAL_RL_KEEP_VERIFIER_ARTIFACTS"),
@@ -85,6 +89,12 @@ class BridgeConfig:
         if current := env.get("PYTHONPATH"):
             roots.append(current)
         env["PYTHONPATH"] = os.pathsep.join(roots)
+        api_key, api_url, domain = resolve_e2b_connection()
+        env["NEXTASK_BENCH_E2B_API_KEY"] = api_key
+        if api_url:
+            env["NEXTASK_BENCH_E2B_API_URL"] = api_url
+        if domain:
+            env["NEXTASK_BENCH_E2B_DOMAIN"] = domain
         return env
 
 
@@ -145,17 +155,6 @@ async def _run_bridge(command: str, *arguments: str, timeout: int) -> dict[str, 
     return payload
 
 
-async def prepare_sandbox(*, sandbox_id: str, package_dir: Path) -> dict[str, Any]:
-    return await _run_bridge(
-        "prepare",
-        "--sandbox-id",
-        sandbox_id,
-        "--package",
-        str(package_dir),
-        timeout=CONFIG.prepare_timeout_sec,
-    )
-
-
 async def grade_sandbox(*, sandbox_id: str, package_dir: Path, paths: dict[str, Path]) -> dict[str, Any]:
     paths["root"].mkdir(parents=True, exist_ok=False)
     paths["candidate"].mkdir()
@@ -172,6 +171,17 @@ async def grade_sandbox(*, sandbox_id: str, package_dir: Path, paths: dict[str, 
         "--output",
         str(paths["result"]),
         timeout=CONFIG.grade_timeout_sec,
+    )
+
+
+async def materialize_workspace(*, sandbox_id: str, package_dir: Path) -> dict[str, Any]:
+    return await _run_bridge(
+        "materialize",
+        "--sandbox-id",
+        sandbox_id,
+        "--package",
+        str(package_dir),
+        timeout=CONFIG.workspace_timeout_sec,
     )
 
 
