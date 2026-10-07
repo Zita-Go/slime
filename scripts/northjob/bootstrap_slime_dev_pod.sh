@@ -16,7 +16,9 @@ exec > >(tee -a "$RUN_DIR/bootstrap.log") 2>&1
 
 echo "[INFO] bootstrap host=$(hostname) source=$REPO_ROOT"
 cd "$REPO_ROOT"
-python -m pip install -e . --no-deps
+# 镜像内已经包含 slime 的运行与构建依赖。禁用 PEP 517 build isolation，
+# 避免无公网 Pod 为临时构建环境重新访问 PyPI 下载 packaging/setuptools。
+python -m pip install -e . --no-deps --no-build-isolation
 
 EXPECTED_GPUS="$EXPECTED_GPUS" python - <<'PY'
 import os
