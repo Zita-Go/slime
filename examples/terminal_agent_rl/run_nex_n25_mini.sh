@@ -23,6 +23,7 @@ ROLLOUT_GPUS=${SLIME_ROLLOUT_GPUS:-16}
 ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}
 
 MAX_CONTEXT_LEN=${MAX_CONTEXT_LEN:-262144}
+MAX_PROMPT_LEN=${MAX_PROMPT_LEN:-65536}
 MAX_GEN_LEN=${MAX_GEN_LEN:-8192}
 ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-4}
 N_SAMPLES_PER_PROMPT=${N_SAMPLES_PER_PROMPT:-4}
@@ -63,6 +64,7 @@ TOTAL_ACTOR_GPUS=$((ACTOR_NODES * ACTOR_GPUS_PER_NODE))
 (( TOTAL_ACTOR_GPUS >= TP_SIZE * EP_SIZE * PP_SIZE )) || die "actor GPU 数不足以容纳当前 EP"
 (( ROLLOUT_GPUS % ROLLOUT_TP_SIZE == 0 )) || die "rollout GPU 数不能被 rollout TP 整除"
 (( MAX_CONTEXT_LEN % CP_SIZE == 0 )) || die "MAX_CONTEXT_LEN 必须能被 CP_SIZE 整除"
+(( MAX_PROMPT_LEN < MAX_CONTEXT_LEN )) || die "MAX_PROMPT_LEN 必须小于 MAX_CONTEXT_LEN"
 
 E2B_VENDOR_DIR="$E2B_VENDOR_DIR" HF_CHECKPOINT="$HF_CHECKPOINT" \
 PYTHONPATH="$E2B_VENDOR_DIR:$SLIME_DIR" python3 - <<'PY'
@@ -107,7 +109,7 @@ ROLLOUT_ARGS=(
     --num-rollout "$NUM_ROLLOUT"
     --rollout-batch-size "$ROLLOUT_BATCH_SIZE"
     --n-samples-per-prompt "$N_SAMPLES_PER_PROMPT"
-    --rollout-max-prompt-len 32768
+    --rollout-max-prompt-len "$MAX_PROMPT_LEN"
     --rollout-max-context-len "$MAX_CONTEXT_LEN"
     --rollout-max-response-len "$MAX_GEN_LEN"
     --rollout-temperature 0.7

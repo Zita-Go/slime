@@ -7,19 +7,23 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 JOB_NAME=${JOB_NAME:?必须设置 JOB_NAME}
 RUN_BASE=${RUN_BASE:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/RUN/$JOB_NAME}
 SMOKE_CONTEXT_LEN=${SMOKE_CONTEXT_LEN:-262144}
+SMOKE_MAX_PROMPT_LEN=${SMOKE_MAX_PROMPT_LEN:-65536}
 
 receipt_ok() {
-    python - "$1" "$2" <<'PY'
+    python - "$@" <<'PY'
 import json
 import sys
 from pathlib import Path
 path=Path(sys.argv[1])
 expected_context=int(sys.argv[2])
+expected_prompt=int(sys.argv[3]) if len(sys.argv) > 3 else None
 try:
     payload=json.loads(path.read_text(encoding="utf-8"))
 except (OSError,json.JSONDecodeError):
     raise SystemExit(1)
 valid=payload.get("ok") is True and payload.get("context_length")==expected_context
+if expected_prompt is not None:
+    valid=valid and payload.get("max_prompt_length")==expected_prompt
 raise SystemExit(0 if valid else 1)
 PY
 }
@@ -30,10 +34,10 @@ else
     RUN_ROOT="$RUN_BASE/sglang-smoke" SMOKE_CONTEXT_LEN="$SMOKE_CONTEXT_LEN" bash "$SCRIPT_DIR/smoke_sglang_nex_n25_mini.sh"
 fi
 
-if receipt_ok "$RUN_BASE/slime-rollout-smoke/receipt.json" "$SMOKE_CONTEXT_LEN"; then
+if receipt_ok "$RUN_BASE/slime-rollout-smoke/receipt.json" "$SMOKE_CONTEXT_LEN" "$SMOKE_MAX_PROMPT_LEN"; then
     echo "[SKIP] Slime rollout smoke 已有成功 receipt"
 else
-    RUN_ROOT="$RUN_BASE/slime-rollout-smoke" SMOKE_CONTEXT_LEN="$SMOKE_CONTEXT_LEN" bash "$SCRIPT_DIR/smoke_slime_rollout_nex_n25_mini.sh"
+    RUN_ROOT="$RUN_BASE/slime-rollout-smoke" SMOKE_CONTEXT_LEN="$SMOKE_CONTEXT_LEN" SMOKE_MAX_PROMPT_LEN="$SMOKE_MAX_PROMPT_LEN" bash "$SCRIPT_DIR/smoke_slime_rollout_nex_n25_mini.sh"
 fi
 
 python - <<PY

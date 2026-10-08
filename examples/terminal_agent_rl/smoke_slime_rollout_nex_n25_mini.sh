@@ -17,7 +17,7 @@ DEBUG_DUMP="$RUN_ROOT/rollout_{rollout_id}.pt"
 RECEIPT="$RUN_ROOT/receipt.json"
 NUM_GPUS=${NUM_GPUS:-$(python -c 'import torch; print(torch.cuda.device_count())')}
 SMOKE_CONTEXT_LEN=${SMOKE_CONTEXT_LEN:-262144}
-SMOKE_MAX_PROMPT_LEN=${SMOKE_MAX_PROMPT_LEN:-16384}
+SMOKE_MAX_PROMPT_LEN=${SMOKE_MAX_PROMPT_LEN:-65536}
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || { echo "[ERROR] 模型不完整" >&2; exit 1; }
 [[ -f "$PROMPT_DATA" ]] || { echo "[ERROR] 训练 JSONL 不存在" >&2; exit 1; }
