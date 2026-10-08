@@ -7,8 +7,31 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 JOB_NAME=${JOB_NAME:?必须设置 JOB_NAME}
 RUN_BASE=${RUN_BASE:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/RUN/$JOB_NAME}
 
-RUN_ROOT="$RUN_BASE/sglang-smoke" bash "$SCRIPT_DIR/smoke_sglang_nex_n25_mini.sh"
-RUN_ROOT="$RUN_BASE/slime-rollout-smoke" bash "$SCRIPT_DIR/smoke_slime_rollout_nex_n25_mini.sh"
+receipt_ok() {
+    python - "$1" <<'PY'
+import json
+import sys
+from pathlib import Path
+path=Path(sys.argv[1])
+try:
+    payload=json.loads(path.read_text(encoding="utf-8"))
+except (OSError,json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if payload.get("ok") is True else 1)
+PY
+}
+
+if receipt_ok "$RUN_BASE/sglang-smoke/receipt.json"; then
+    echo "[SKIP] SGLang smoke 已有成功 receipt"
+else
+    RUN_ROOT="$RUN_BASE/sglang-smoke" bash "$SCRIPT_DIR/smoke_sglang_nex_n25_mini.sh"
+fi
+
+if receipt_ok "$RUN_BASE/slime-rollout-smoke/receipt.json"; then
+    echo "[SKIP] Slime rollout smoke 已有成功 receipt"
+else
+    RUN_ROOT="$RUN_BASE/slime-rollout-smoke" bash "$SCRIPT_DIR/smoke_slime_rollout_nex_n25_mini.sh"
+fi
 
 python - <<PY
 import json

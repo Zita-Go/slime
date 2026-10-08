@@ -92,7 +92,7 @@ ray job submit --address=http://127.0.0.1:8265 \
     --num-rollout 1 \
     --rollout-batch-size 1 \
     --n-samples-per-prompt 1 \
-    --rollout-max-prompt-len 32768 \
+    --rollout-max-prompt-len 16384 \
     --rollout-max-context-len 32768 \
     --rollout-max-response-len 1024 \
     --rollout-temperature 0.7 \
