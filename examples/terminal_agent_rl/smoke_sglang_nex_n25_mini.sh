@@ -7,6 +7,7 @@ HF_CHECKPOINT=${HF_CHECKPOINT:-/gpfs/shared_data/zhangguoqiang/models/huggingfac
 RUN_ROOT=${RUN_ROOT:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/RUN/nex-n25-sglang-smoke}
 PORT=${PORT:-30000}
 GPU_IDS=${GPU_IDS:-0,1}
+SMOKE_CONTEXT_LEN=${SMOKE_CONTEXT_LEN:-262144}
 SERVER_LOG="$RUN_ROOT/server.log"
 RECEIPT="$RUN_ROOT/receipt.json"
 
@@ -54,7 +55,7 @@ setsid env CUDA_VISIBLE_DEVICES="$GPU_IDS" python -u -m sglang.launch_server \
     --host 127.0.0.1 \
     --port "$PORT" \
     --trust-remote-code \
-    --context-length 32768 \
+    --context-length "$SMOKE_CONTEXT_LEN" \
     --mem-fraction-static 0.75 \
     --chunked-prefill-size 8192 \
     --max-running-requests 8 \
@@ -84,7 +85,7 @@ done
     exit 1
 }
 
-PORT="$PORT" RECEIPT="$RECEIPT" HF_CHECKPOINT="$HF_CHECKPOINT" python - <<'PY'
+PORT="$PORT" RECEIPT="$RECEIPT" HF_CHECKPOINT="$HF_CHECKPOINT" SMOKE_CONTEXT_LEN="$SMOKE_CONTEXT_LEN" python - <<'PY'
 from __future__ import annotations
 
 import json
@@ -156,6 +157,7 @@ receipt={
     "sglang_version":getattr(sglang,"__version__","unknown"),
     "python":platform.python_version(),
     "gpu_count_visible":torch.cuda.device_count(),
+    "context_length":int(os.environ["SMOKE_CONTEXT_LEN"]),
     "plain_finish_reason":plain["choices"][0].get("finish_reason"),
     "plain_has_content":bool(plain_message.get("content")),
     "plain_has_reasoning":bool(plain_message.get("reasoning_content")),

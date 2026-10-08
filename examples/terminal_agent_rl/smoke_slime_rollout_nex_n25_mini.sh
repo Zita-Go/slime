@@ -16,12 +16,15 @@ SMOKE_DATA="$RUN_ROOT/smoke.jsonl"
 DEBUG_DUMP="$RUN_ROOT/rollout_{rollout_id}.pt"
 RECEIPT="$RUN_ROOT/receipt.json"
 NUM_GPUS=${NUM_GPUS:-$(python -c 'import torch; print(torch.cuda.device_count())')}
+SMOKE_CONTEXT_LEN=${SMOKE_CONTEXT_LEN:-262144}
+SMOKE_MAX_PROMPT_LEN=${SMOKE_MAX_PROMPT_LEN:-16384}
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || { echo "[ERROR] 模型不完整" >&2; exit 1; }
 [[ -f "$PROMPT_DATA" ]] || { echo "[ERROR] 训练 JSONL 不存在" >&2; exit 1; }
 [[ -f "$TERMINAL_RL_E2B_CONFIG_FILE" ]] || { echo "[ERROR] E2B config 不存在" >&2; exit 1; }
 [[ -f "$E2B_VENDOR_DIR/e2b/__init__.py" ]] || { echo "[ERROR] vendored e2b 不存在" >&2; exit 1; }
 [[ "$NUM_GPUS" =~ ^[1-9][0-9]*$ ]] && (( NUM_GPUS >= 2 )) || { echo "[ERROR] Slime rollout smoke 至少需要 2 张 GPU" >&2; exit 1; }
+(( SMOKE_MAX_PROMPT_LEN < SMOKE_CONTEXT_LEN )) || { echo "[ERROR] prompt limit 必须小于 context limit" >&2; exit 1; }
 mkdir -p "$RUN_ROOT"
 
 PROMPT_DATA="$PROMPT_DATA" SMOKE_DATA="$SMOKE_DATA" python - <<'PY'
@@ -92,8 +95,8 @@ ray job submit --address=http://127.0.0.1:8265 \
     --num-rollout 1 \
     --rollout-batch-size 1 \
     --n-samples-per-prompt 1 \
-    --rollout-max-prompt-len 16384 \
-    --rollout-max-context-len 32768 \
+    --rollout-max-prompt-len "$SMOKE_MAX_PROMPT_LEN" \
+    --rollout-max-context-len "$SMOKE_CONTEXT_LEN" \
     --rollout-max-response-len 1024 \
     --rollout-temperature 0.7 \
     --rollout-top-p 0.95 \
@@ -112,7 +115,7 @@ ray job submit --address=http://127.0.0.1:8265 \
     --rollout-num-gpus 2 \
     --rollout-num-gpus-per-engine 2 \
     --sglang-mem-fraction-static 0.75 \
-    --sglang-context-length 32768 \
+    --sglang-context-length "$SMOKE_CONTEXT_LEN" \
     --sglang-tool-call-parser qwen3_coder \
     --sglang-reasoning-parser qwen3 \
     --sglang-chat-template "$HF_CHECKPOINT/chat_template.jinja" \
@@ -121,7 +124,7 @@ ray job submit --address=http://127.0.0.1:8265 \
     --save-debug-rollout-data "$DEBUG_DUMP" \
     2>&1 | tee "$RUN_ROOT/run.log"
 
-RUN_ROOT="$RUN_ROOT" RECEIPT="$RECEIPT" python - <<'PY'
+RUN_ROOT="$RUN_ROOT" RECEIPT="$RECEIPT" SMOKE_CONTEXT_LEN="$SMOKE_CONTEXT_LEN" SMOKE_MAX_PROMPT_LEN="$SMOKE_MAX_PROMPT_LEN" python - <<'PY'
 from __future__ import annotations
 import json, os
 from pathlib import Path
@@ -150,6 +153,8 @@ receipt={
     "rollout_dump":str(dumps[0]),
     "rollout_id":payload.get("rollout_id"),
     "sample_count":len(samples),
+    "context_length":int(os.environ["SMOKE_CONTEXT_LEN"]),
+    "max_prompt_length":int(os.environ["SMOKE_MAX_PROMPT_LEN"]),
     "statuses":[sample["status"] for sample in samples],
     "rewards":[sample["reward"] for sample in samples],
     "response_lengths":[sample["response_length"] for sample in samples],
