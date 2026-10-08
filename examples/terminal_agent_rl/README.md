@@ -72,7 +72,7 @@ python -m examples.terminal_agent_rl.smoke_e2b \
 
 ## 模型转换
 
-模型下载完成后，申请一台 8×H100 开发 Pod，在 Pod 内执行：
+模型下载完成后，申请一台至少 2×H100 的开发 Pod，在 Pod 内执行：
 
 ```bash
 bash examples/terminal_agent_rl/convert_nex_n25_mini.sh
@@ -82,7 +82,7 @@ bash examples/terminal_agent_rl/convert_nex_n25_mini.sh
 
 ## GPU 冒烟
 
-在专用 8×H100 Pod 内依次验证 SGLang TP=2 和一条真实 Slime/E2B rollout：
+在专用至少 2×H100 Pod 内依次验证 SGLang TP=2 和一条真实 Slime/E2B rollout：
 
 ```bash
 JOB_NAME=<NorthJob JobAlias> bash examples/terminal_agent_rl/run_gpu_smokes.sh

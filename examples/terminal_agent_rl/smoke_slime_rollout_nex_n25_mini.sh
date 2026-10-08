@@ -15,11 +15,13 @@ E2B_VENDOR_DIR=${E2B_VENDOR_DIR:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/ve
 SMOKE_DATA="$RUN_ROOT/smoke.jsonl"
 DEBUG_DUMP="$RUN_ROOT/rollout_{rollout_id}.pt"
 RECEIPT="$RUN_ROOT/receipt.json"
+NUM_GPUS=${NUM_GPUS:-$(python -c 'import torch; print(torch.cuda.device_count())')}
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || { echo "[ERROR] 模型不完整" >&2; exit 1; }
 [[ -f "$PROMPT_DATA" ]] || { echo "[ERROR] 训练 JSONL 不存在" >&2; exit 1; }
 [[ -f "$TERMINAL_RL_E2B_CONFIG_FILE" ]] || { echo "[ERROR] E2B config 不存在" >&2; exit 1; }
 [[ -f "$E2B_VENDOR_DIR/e2b/__init__.py" ]] || { echo "[ERROR] vendored e2b 不存在" >&2; exit 1; }
+[[ "$NUM_GPUS" =~ ^[1-9][0-9]*$ ]] && (( NUM_GPUS >= 2 )) || { echo "[ERROR] Slime rollout smoke 至少需要 2 张 GPU" >&2; exit 1; }
 mkdir -p "$RUN_ROOT"
 
 PROMPT_DATA="$PROMPT_DATA" SMOKE_DATA="$SMOKE_DATA" python - <<'PY'
@@ -35,7 +37,7 @@ cd "$SLIME_DIR"
 source scripts/models/qwen3.5-35B-A3B.sh
 
 ray stop --force >/dev/null 2>&1 || true
-ray start --head --node-ip-address 127.0.0.1 --num-gpus 8 --disable-usage-stats --dashboard-host=127.0.0.1 --dashboard-port=8265
+ray start --head --node-ip-address 127.0.0.1 --num-gpus "$NUM_GPUS" --disable-usage-stats --dashboard-host=127.0.0.1 --dashboard-port=8265
 cleanup() {
     ray stop --force >/dev/null 2>&1 || true
 }
@@ -77,7 +79,7 @@ ray job submit --address=http://127.0.0.1:8265 \
     -- python3 -u train.py \
     --debug-rollout-only \
     --actor-num-nodes 1 \
-    --actor-num-gpus-per-node 8 \
+    --actor-num-gpus-per-node "$NUM_GPUS" \
     "${MODEL_ARGS[@]}" \
     --hf-checkpoint "$HF_CHECKPOINT" \
     --ref-load "$HF_CHECKPOINT" \

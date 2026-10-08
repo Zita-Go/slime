@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在专用 8×H100 Pod 中顺序执行 SGLang 与 Slime rollout 冒烟。
+# 在专用 >=2×H100 Pod 中顺序执行 SGLang 与 Slime rollout 冒烟。
 
 set -euo pipefail
 

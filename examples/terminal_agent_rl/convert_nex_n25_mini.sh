@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在单台 8×H100 GPU Pod 中把 Nex-N2.5-mini 转为 Megatron torch_dist。
+# 在单台 >=2×H100 GPU Pod 中把 Nex-N2.5-mini 转为 Megatron torch_dist。
 
 set -euo pipefail
 
@@ -7,7 +7,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SLIME_DIR=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 HF_CHECKPOINT=${HF_CHECKPOINT:-/gpfs/shared_data/zhangguoqiang/models/huggingface.co/nex-agi/Nex-N2.5-mini}
 REF_MODEL_PATH=${REF_MODEL_PATH:-${HF_CHECKPOINT}_torch_dist}
-NPROC_PER_NODE=${NPROC_PER_NODE:-8}
+NPROC_PER_NODE=${NPROC_PER_NODE:-$(python -c 'import torch; print(torch.cuda.device_count())')}
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || {
     echo "[ERROR] Hugging Face checkpoint 不完整: $HF_CHECKPOINT" >&2
@@ -15,6 +15,10 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 }
 [[ "$NPROC_PER_NODE" =~ ^[1-9][0-9]*$ ]] || {
     echo "[ERROR] NPROC_PER_NODE 必须是正整数" >&2
+    exit 1
+}
+(( NPROC_PER_NODE >= 2 )) || {
+    echo "[ERROR] Nex-N2.5-mini 转换至少需要 2 张 H100，当前为 $NPROC_PER_NODE" >&2
     exit 1
 }
 if [[ -f "$REF_MODEL_PATH/latest_checkpointed_iteration.txt" ]]; then
