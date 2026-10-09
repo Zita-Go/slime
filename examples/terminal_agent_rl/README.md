@@ -98,7 +98,11 @@ Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke �
 
 ## 多机训练
 
-默认拓扑为 4×8 H100，其中 2 节点训练 actor、2 节点运行 8 个 TP=2 rollout engine：
+默认拓扑为 8×8 H100（64卡），其中 4 节点训练 actor、4 节点运行 16 个 TP=2 rollout engine：
+
+正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 32K token 动态打包。
+
+`SGLANG_SERVER_CONCURRENCY=4` 与16个engine对应64条在途轨迹、约4个同题组并发；128条轨迹不要求同时启动。启动sandbox的并发仍限制为16。单轨迹GPU smoke继续使用n=1且不更新模型。
 
 ```bash
 MODE=train \

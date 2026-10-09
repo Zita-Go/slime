@@ -4,7 +4,7 @@
 
 ## 多节点训练集群
 
-默认只预览一个 4×8 H100 的 Ray 集群命令，其中 2 个节点用于 actor、2 个节点用于 rollout：
+默认只预览一个 8×8 H100（64卡）的 Ray 集群命令，其中 4 个节点用于 actor、4 个节点用于 rollout：
 
 ```bash
 bash scripts/northjob/launch_slime_multinode.sh
@@ -36,7 +36,7 @@ MODE=train TRAIN_SCRIPT=/gpfs/.../train_terminal_agent.sh DRY_RUN=false \
   bash scripts/northjob/launch_slime_multinode.sh
 ```
 
-资源拓扑可以覆盖，例如 `NNODES=8 ACTOR_NODES=4 ROLLOUT_NODES=4 GPU_PER_NODE=8`。启动器要求 `ACTOR_NODES + ROLLOUT_NODES == NNODES`。
+资源拓扑可以覆盖，例如回退到32卡时设置 `NNODES=4 ACTOR_NODES=2 ROLLOUT_NODES=2 GPU_PER_NODE=8`。启动器要求 `ACTOR_NODES + ROLLOUT_NODES == NNODES`。
 
 ## 单节点开发 Pod
 
