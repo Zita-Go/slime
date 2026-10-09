@@ -256,7 +256,9 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            if processor:
+            # 原始字符串只有文本；模型携带 processor 不应强制套用聊天模板。
+            # 配置多模态字段时，_build_messages 已将字符串转为消息列表。
+            if processor and not isinstance(prompt, str):
                 from slime.utils.processing_utils import process_vision_info
 
                 assert isinstance(
