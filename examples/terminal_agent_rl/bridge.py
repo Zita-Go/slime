@@ -458,6 +458,12 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Iterable[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command != "export":
+            if __package__:
+                from .e2b_network import configure_bridge_network
+            else:
+                from e2b_network import configure_bridge_network
+            configure_bridge_network()
         if args.command == "export":
             payload = export_collection(args.collection, args.output)
         elif args.command == "materialize":

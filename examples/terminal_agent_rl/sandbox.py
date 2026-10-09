@@ -7,6 +7,7 @@ import logging
 from slime.agent.sandbox import E2BSandbox
 
 from .e2b_config import resolve_e2b_connection
+from .e2b_network import resolve_e2b_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class NextaskE2BSandbox(E2BSandbox):
         from e2b import AsyncSandbox
 
         api_key, api_url, domain = resolve_e2b_connection()
-        options = {"api_key": api_key}
+        options = {"api_key": api_key, "proxy": resolve_e2b_proxy()}
         if api_url:
             options["api_url"] = api_url
         if domain:

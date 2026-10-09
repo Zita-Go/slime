@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .e2b_config import resolve_e2b_connection
+from .e2b_network import e2b_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class BridgeConfig:
             env["NEXTASK_BENCH_E2B_API_URL"] = api_url
         if domain:
             env["NEXTASK_BENCH_E2B_DOMAIN"] = domain
-        return env
+        return e2b_subprocess_env(env)
 
 
 CONFIG = BridgeConfig.from_env()

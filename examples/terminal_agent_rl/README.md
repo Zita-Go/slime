@@ -60,6 +60,10 @@ E2B 凭据不写入训练脚本或 Ray runtime JSON。训练任务只传递 `TER
 
 内部 E2B 网关当前固定使用共享目录中的 `e2b 2.21.0`（wheel SHA-256 `360a55ff23335dd62ee5ca86c41dc55de597d73b846f5c2361f6eac6c712a371`）；训练脚本把该目录放在 Ray worker 的 `PYTHONPATH` 最前面，避免容器内较新的 SDK 调用不兼容接口。
 
+GPU 冒烟和训练入口默认设置 `TERMINAL_RL_E2B_PROXY=http://10.51.6.27:5023`，并传入 Ray worker。Slime SDK 使用显式 `proxy=`；独立 NexTask bridge 在进程入口适配 SDK 配置默认值，覆盖文件、命令、快照创建/恢复/删除与 verifier sandbox。固定 NexTask/SDK 源码不变，设计见 [E2B代理方案](RFC-e2b-proxy.md)。
+
+直接在当前机器调用 Python 入口时默认直连；bridge 会清除继承的通用代理。若需要 GPU 入口直连，显式设置 `TERMINAL_RL_E2B_PROXY=''`。该变量只控制 E2B，不代理模型推理/Ray通信。
+
 只验证 E2B public workspace 与 verifier 闭环、不加载模型时，可运行：
 
 ```bash

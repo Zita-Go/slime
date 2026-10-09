@@ -9,6 +9,7 @@ import secrets
 from pathlib import Path
 
 from . import runtime
+from .e2b_network import resolve_e2b_proxy
 from .sandbox import NextaskE2BSandbox
 
 
@@ -42,6 +43,7 @@ async def run(package: Path, template_identity: str) -> dict:
                 raise RuntimeError(f"verifier was not determinate: {grade!r}")
             result = {
                 "ok": True,
+                "e2b_proxy": resolve_e2b_proxy(),
                 "template_identity": template_identity,
                 "public_asset_count": materialized.get("asset_count"),
                 "public_workspace_digest": materialized.get("public_workspace_digest"),
@@ -66,8 +68,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--template-identity", required=True)
+    parser.add_argument("--receipt", type=Path)
     args = parser.parse_args()
     result = asyncio.run(run(args.package.resolve(), args.template_identity))
+    if args.receipt:
+        args.receipt.parent.mkdir(parents=True, exist_ok=True)
+        tmp = args.receipt.with_suffix(".tmp")
+        tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(args.receipt)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 

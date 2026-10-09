@@ -12,6 +12,7 @@ NEXTASK_RUNTIME_ROOT=${NEXTASK_RUNTIME_ROOT:-/gpfs/users/i-zhangguoqiang/termina
 NEXTASK_RUNTIME_PYTHON=${NEXTASK_RUNTIME_PYTHON:-/gpfs/users/i-zhangguoqiang/terminal-code/NexTask-rfc0012/.venv/bin/python}
 TERMINAL_RL_E2B_CONFIG_FILE=${TERMINAL_RL_E2B_CONFIG_FILE:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/.secrets/nextask-e2b.json}
 E2B_VENDOR_DIR=${E2B_VENDOR_DIR:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/vendor/e2b-2.21.0}
+TERMINAL_RL_E2B_PROXY=${TERMINAL_RL_E2B_PROXY-http://10.51.6.27:5023}
 SMOKE_DATA="$RUN_ROOT/smoke.jsonl"
 DEBUG_DUMP="$RUN_ROOT/rollout_{rollout_id}.pt"
 RECEIPT="$RUN_ROOT/receipt.json"
@@ -47,6 +48,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 export NEXTASK_RUNTIME_ROOT NEXTASK_RUNTIME_PYTHON TERMINAL_RL_E2B_CONFIG_FILE E2B_VENDOR_DIR
+export TERMINAL_RL_E2B_PROXY
 export TERMINAL_RL_VERIFIER_WORK_ROOT="$RUN_ROOT/verifier-work"
 export TERMINAL_RL_AGENT_TIME_BUDGET_SEC=${TERMINAL_RL_AGENT_TIME_BUDGET_SEC:-300}
 export TERMINAL_RL_WORKSPACE_TIMEOUT_SEC=${TERMINAL_RL_WORKSPACE_TIMEOUT_SEC:-600}
@@ -63,6 +65,7 @@ RUNTIME_ENV_JSON=$(python - <<'PY'
 import json, os
 keys=(
     "NEXTASK_RUNTIME_ROOT","NEXTASK_RUNTIME_PYTHON","TERMINAL_RL_E2B_CONFIG_FILE","E2B_VENDOR_DIR",
+    "TERMINAL_RL_E2B_PROXY",
     "TERMINAL_RL_VERIFIER_WORK_ROOT","TERMINAL_RL_AGENT_TIME_BUDGET_SEC","TERMINAL_RL_WORKSPACE_TIMEOUT_SEC",
     "TERMINAL_RL_GRADE_TIMEOUT_SEC","TERMINAL_RL_BOOT_CONCURRENCY","TERMINAL_RL_MAX_TURNS",
     "TERMINAL_RL_REASONING_EFFORT","ADAPTER_BIND_HOST","ADAPTER_PORT","no_proxy","NO_PROXY",
@@ -155,6 +158,7 @@ receipt={
     "sample_count":len(samples),
     "context_length":int(os.environ["SMOKE_CONTEXT_LEN"]),
     "max_prompt_length":int(os.environ["SMOKE_MAX_PROMPT_LEN"]),
+    "e2b_proxy":os.environ.get("TERMINAL_RL_E2B_PROXY") or None,
     "statuses":[sample["status"] for sample in samples],
     "rewards":[sample["reward"] for sample in samples],
     "response_lengths":[sample["response_length"] for sample in samples],
