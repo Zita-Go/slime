@@ -74,6 +74,17 @@ python -m examples.terminal_agent_rl.smoke_e2b \
   --template-identity '<template_identity>'
 ```
 
+## E2B 代理验收记录
+
+2026-10-09 15:04 CST，无模型的真实 public-workspace/verifier 冒烟通过；代理为 `http://10.51.6.27:5023`，使用代理接入提交 `58164d39`。
+
+- 第一题公开资产89项，digest为 `9f5eb5cb54506ef527acca016c9f54e20ad6c2d689695a03e928cdded406aa92`，与冻结 Final manifest 的严格公开闭包一致；Agent workspace 未包含reference/verifier/私有测试。
+- 未运行模型求解的初始候选得到确定性 `NON_EQUAL`，score=0/100、ratio=0.0；这是有效判分结果。
+- 候选snapshot和live sandbox清理均confirmed；本地候选临时目录为空。
+- 真实回执：`/gpfs/users/i-zhangguoqiang/terminal-code/RL/RUN/e2b-proxy-verifier-1009-065754/receipt.json`；monitor=`20261009T065831Z-13a45f10`，exit_code=0、completed。
+
+这次验收证明代理覆盖准备工作区、snapshot和verifier链路，不代表模型Agent轨迹、Slime loss/logprob、Megatron参数更新或64卡正式训练已通过。完整GPU rollout/训练验收仍需单独执行。
+
 ## 模型转换
 
 模型下载完成后，申请一台至少 2×H100 的开发 Pod，在 Pod 内执行：
