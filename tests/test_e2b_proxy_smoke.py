@@ -12,8 +12,8 @@ NUM_GPUS = 0
 
 
 @pytest.mark.parametrize("failure", [None, "files", "command", "cleanup"])
-def test_explicit_proxy_and_cleanup(monkeypatch, failure):
-    proxy = "http://10.51.6.27:5023"
+@pytest.mark.parametrize("proxy", [None, "http://10.51.6.27:5023"])
+def test_explicit_proxy_and_cleanup(monkeypatch, failure, proxy):
     calls = []
     contents = {}
 

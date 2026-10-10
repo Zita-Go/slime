@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from .e2b_config import resolve_e2b_connection
 
 
-async def run(proxy: str, template: str, *, require_gpu: bool = False) -> dict:
+async def run(proxy: str | None, template: str, *, require_gpu: bool = False) -> dict:
     # 本进程只使用传入的代理，不继承当前机器的代理设置。
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         os.environ.pop(name, None)
@@ -24,9 +24,11 @@ async def run(proxy: str, template: str, *, require_gpu: bool = False) -> dict:
     import httpx
     from e2b import AsyncSandbox
 
-    parsed = urlsplit(proxy)
-    if parsed.scheme != "http" or not parsed.hostname or not parsed.port or parsed.username or parsed.password:
-        raise ValueError("proxy 必须是无凭据的 http://host:port")
+    # None为当前CPU机器的显式直连；CLI仍要求传入代理，GPU行为不变。
+    if proxy is not None:
+        parsed = urlsplit(proxy)
+        if parsed.scheme != "http" or not parsed.hostname or not parsed.port or parsed.username or parsed.password:
+            raise ValueError("proxy 必须是无凭据的 http://host:port")
     version = importlib.metadata.version("e2b")
     if version != "2.21.0":
         raise RuntimeError(f"需要固定 SDK e2b 2.21.0，实际为 {version}")

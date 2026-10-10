@@ -52,7 +52,7 @@ die() {
 [[ -f "$HF_CHECKPOINT/chat_template.jinja" ]] || die "缺少 chat template: $HF_CHECKPOINT/chat_template.jinja"
 [[ -f "$REF_MODEL_PATH/latest_checkpointed_iteration.txt" ]] || die "缺少 torch_dist checkpoint: $REF_MODEL_PATH"
 [[ -f "$PROMPT_DATA" ]] || die "训练 JSONL 不存在: $PROMPT_DATA"
-[[ $(wc -l < "$PROMPT_DATA") -eq 101 ]] || die "训练 JSONL 应为 101 行: $PROMPT_DATA"
+PYTHONPATH="$SLIME_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m examples.terminal_agent_rl.validate_dataset --prompt-data "$PROMPT_DATA"
 [[ -x "$NEXTASK_RUNTIME_PYTHON" ]] || die "NexTask Python 不可执行: $NEXTASK_RUNTIME_PYTHON"
 [[ $(git -C "$NEXTASK_RUNTIME_ROOT" rev-parse HEAD) == "$EXPECTED_NEXTASK_COMMIT" ]] || die "NexTask runtime commit 漂移"
 [[ $(git -C "$NEXTASK_RUNTIME_ROOT/nexau" rev-parse HEAD) == "$EXPECTED_NEXAU_COMMIT" ]] || die "NexAU runtime commit 漂移"

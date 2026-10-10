@@ -36,6 +36,8 @@ bash examples/terminal_agent_rl/export_dataset.sh
 
 并原子写入该目录下的 `slime_train.jsonl`。导出过程会使用 v3 package loader 完整校验每个题包和参考快照身份，任何 schema、digest、template 或 workspace 不一致都会整体失败，不会静默跳题。
 
+训练入口不固定题目数量。`validate_dataset.py` 校验非空原始题面、v3 schema/verifier协议、metadata身份/digest和重复题；当JSONL旁有`collection.json`时，还要求题目集合与manifest身份一致，避免collection扩容后仍训练旧子集。新增题目应先通过严格public闭包/verifier审计和E2B模板可用性检查，再重新导出；验证过程不修改题面或参考材料。
+
 ## 运行链路
 
 ```text
