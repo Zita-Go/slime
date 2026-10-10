@@ -26,6 +26,8 @@ GPU训练使用 `RL/vendor/nextask-runtime-py313/bin/python` 运行bridge。该P
 
 Ray job入口使用Slime仓库的绝对`train.py`路径。driver默认继承Ray服务工作目录，提交客户端的`cd`不会改变driver工作目录；源码通过runtime env中的`PYTHONPATH`从共享仓库加载。
 
+正式训练默认每5个rollout保存一次checkpoint；短程或可抢占任务可显式设置`SAVE_INTERVAL=1`，使每次完成的参数更新都形成恢复点。保存成功仍需核验模型、optimizer和数据进度元数据，目录存在本身不代表可恢复。
+
 ## 导出训练集
 
 ```bash
