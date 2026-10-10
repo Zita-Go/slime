@@ -38,6 +38,19 @@ MODE=train TRAIN_SCRIPT=/gpfs/.../train_terminal_agent.sh DRY_RUN=false \
 
 资源拓扑可以覆盖，例如回退到32卡时设置 `NNODES=4 ACTOR_NODES=2 ROLLOUT_NODES=2 GPU_PER_NODE=8`。启动器要求 `ACTOR_NODES + ROLLOUT_NODES == NNODES`。
 
+固定Slime镜像没有NorthJob runtime。多机入口通过 `--user-env-path` 在调用northlaunch之前source `prepare_northlaunch.sh`，只链接GPFS中固定版本的northlaunch，不激活共享环境或替换训练Python。可用 `NORTHLAUNCH_BIN` 覆盖共享入口；准备前后必须保持训练Python一致。设计见 [启动入口方案](RFC-launcher-entry.md)。
+
+共享目录从入口准备阶段即保存 `launcher-<rank>.log/.exit_code`；bootstrap在检查ROLE等变量之前保存 `node-<rank>-<role>.log/.exit_code`，因此入口失败也有证据。
+
+长任务watch应检查启动结果，而不是只等ready文件：
+
+```bash
+python3 scripts/northjob/check_slime_startup.py --job-name <JobAlias> \
+  --nodes 8 --gpus-per-node 8 --run-dir /gpfs/.../RL/RUN/<JobAlias>
+```
+
+该检查产出 `startup-status.json`；`waiting` 返回1，取得 `ready` 或 `failed` 结果后返回0。watch完成只表示结果已生成，后续必须检查JSON的status：只有ready才继续模型转换/训练；failed时先读错误和日志。Job终止、主容器退出（即使sidecar仍Running）或Job消失都会产生失败诊断，旧ready文件不能覆盖真实失败。
+
 ## 单节点开发 Pod
 
 默认只预览命令，不会提交：

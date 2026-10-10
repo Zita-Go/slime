@@ -8,6 +8,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 DEFAULT_WORKSPACE=$(dirname -- "$REPO_ROOT")
 
 NORTHJOB_BIN=${NORTHJOB_BIN:-/gpfs/users/i-zhangguoqiang/envs/northjob-3.3.11/bin/northjob}
+NORTHLAUNCH_BIN=${NORTHLAUNCH_BIN:-$(dirname -- "$NORTHJOB_BIN")/northlaunch}
 JOB_NAME=${JOB_NAME:-slime-ray-8n8g-$(date -u +%Y%m%d-%H%M%S)}
 WORKSPACE=${WORKSPACE:-$DEFAULT_WORKSPACE}
 
@@ -39,6 +40,7 @@ require_positive_int() {
 }
 
 [[ -x "$NORTHJOB_BIN" ]] || die "NorthJob 不可执行: $NORTHJOB_BIN"
+[[ "$NORTHLAUNCH_BIN" == /* && -x "$NORTHLAUNCH_BIN" ]] || die "GPFS northlaunch 不可执行: $NORTHLAUNCH_BIN"
 [[ -d "$REPO_ROOT/.git" ]] || die "slime 仓库不存在: $REPO_ROOT"
 [[ -d "$WORKSPACE" && -w "$WORKSPACE" ]] || die "workspace 不存在或不可写: $WORKSPACE"
 [[ "$JOB_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || \
@@ -79,11 +81,14 @@ printf -v NODE_CMD 'bash %q %q %q %q %q %q %q %q' \
     "$SCRIPT_DIR/bootstrap_slime_ray_node.sh" \
     "$JOB_NAME" "$NNODES" "$GPU_PER_NODE" "$ACTOR_NODES" "$ROLLOUT_NODES" \
     "$RAY_OBJECT_STORE_MEMORY_BYTES" "$MODE:$TRAIN_SCRIPT"
+printf -v PREPARE_CMD 'source %q %q %q' \
+    "$SCRIPT_DIR/prepare_northlaunch.sh" "$JOB_NAME" "$NORTHLAUNCH_BIN"
 
 NORTHJOB_ARGS=(
     create
     --job-type train
     --train-launcher raw
+    --user-env-path "$PREPARE_CMD"
     --job-name "$JOB_NAME"
     --workspace "$WORKSPACE"
     --nnodes "$NNODES"
@@ -118,5 +123,7 @@ NORTHJOB_NO_UPDATE_CHECK=1 "$NORTHJOB_BIN" "${NORTHJOB_ARGS[@]}"
 
 echo "[OK] NorthJob 已接受多节点任务: $JOB_NAME"
 echo "[INFO] 集群状态目录: $RUN_DIR"
+printf '[INFO] 启动结果检查: python3 %q --job-name %q --namespace %q --nodes %q --gpus-per-node %q --run-dir %q\n' \
+    "$SCRIPT_DIR/check_slime_startup.py" "$JOB_NAME" "$K8S_NAMESPACE" "$NNODES" "$GPU_PER_NODE" "$RUN_DIR"
 printf '[INFO] interactive 模式在 cluster.ready 出现后进入 master：%q %q\n' \
     "$SCRIPT_DIR/enter_slime_dev_pod.sh" "$JOB_NAME"

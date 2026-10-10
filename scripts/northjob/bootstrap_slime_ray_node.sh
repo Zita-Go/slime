@@ -17,6 +17,17 @@ MODE_AND_SCRIPT=${7:?缺少运行模式}
 MODE=${MODE_AND_SCRIPT%%:*}
 TRAIN_SCRIPT=${MODE_AND_SCRIPT#*:}
 
+NODE_RANK=${RANK:-unknown}
+NODE_ROLE=${ROLE:-unknown}
+RUN_DIR="$WORKSPACE/RUN/$JOB_NAME"
+NODE_LOG="$RUN_DIR/node-${NODE_RANK}-${NODE_ROLE}.log"
+DONE_FILE="$RUN_DIR/cluster.done"
+STOP_FILE="$RUN_DIR/cluster.stop"
+mkdir -p "$RUN_DIR"
+exec > >(tee -a "$NODE_LOG") 2>&1
+trap 'node_rc=$?; printf "%s\n" "$node_rc" > "$RUN_DIR/node-${NODE_RANK}-${NODE_ROLE}.exit_code"' EXIT
+echo "[INFO] bootstrap entered host=$(hostname) rank=$NODE_RANK role=$NODE_ROLE"
+
 : "${ROLE:?NorthJob 未设置 ROLE}"
 : "${MASTER_ADDR:?NorthJob 未设置 MASTER_ADDR}"
 : "${NODE_IP:?NorthJob 未设置 NODE_IP}"
@@ -26,15 +37,6 @@ TRAIN_SCRIPT=${MODE_AND_SCRIPT#*:}
     echo "[ERROR] WORLD_SIZE=$WORLD_SIZE, expected=$EXPECTED_NODES" >&2
     exit 1
 }
-
-NODE_RANK=${RANK:-0}
-RUN_DIR="$WORKSPACE/RUN/$JOB_NAME"
-NODE_LOG="$RUN_DIR/node-${NODE_RANK}-${ROLE}.log"
-DONE_FILE="$RUN_DIR/cluster.done"
-STOP_FILE="$RUN_DIR/cluster.stop"
-
-mkdir -p "$RUN_DIR"
-exec > >(tee -a "$NODE_LOG") 2>&1
 
 export PYTHONPATH="$REPO_ROOT:/root/Megatron-LM${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
@@ -100,18 +102,19 @@ fi
 touch "$RUN_DIR/node-${NODE_RANK}.ready"
 
 if [[ "$ROLE" == "driver" ]]; then
-    EXPECTED_NODES="$EXPECTED_NODES" MASTER_ADDR="$MASTER_ADDR" python - <<'PY'
+    EXPECTED_NODES="$EXPECTED_NODES" EXPECTED_GPUS="$EXPECTED_GPUS" MASTER_ADDR="$MASTER_ADDR" python - <<'PY'
 import os
 import time
 
 import ray
 
 expected = int(os.environ["EXPECTED_NODES"])
+expected_gpus = expected * int(os.environ["EXPECTED_GPUS"])
 ray.init(address=f"{os.environ['MASTER_ADDR']}:6379", logging_level="ERROR")
 deadline = time.monotonic() + 900
 while time.monotonic() < deadline:
     alive = [node for node in ray.nodes() if node.get("Alive")]
-    if len(alive) == expected:
+    if len(alive) == expected and ray.cluster_resources().get("GPU", 0) == expected_gpus:
         print("[READY] Ray nodes:", len(alive), "resources:", ray.cluster_resources())
         break
     print(f"[WAIT] Ray nodes {len(alive)}/{expected}")
