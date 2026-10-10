@@ -27,6 +27,7 @@ RAY_OBJECT_STORE_MEMORY_BYTES=${RAY_OBJECT_STORE_MEMORY_BYTES:-34359738368}
 MODE=${MODE:-interactive}
 TRAIN_SCRIPT=${TRAIN_SCRIPT:-}
 DRY_RUN=${DRY_RUN:-true}
+CPU_STARTUP_SMOKE=${CPU_STARTUP_SMOKE:-false}
 
 die() {
     echo "[ERROR] $*" >&2
@@ -46,10 +47,16 @@ require_positive_int() {
 [[ "$JOB_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || \
     die "JOB_NAME 必须是 1-63 位小写字母、数字或连字符: $JOB_NAME"
 
-for name in NNODES GPU_PER_NODE MEM_PER_POD K8S_PRIORITY ACTOR_NODES \
+for name in NNODES MEM_PER_POD K8S_PRIORITY ACTOR_NODES \
     ROLLOUT_NODES RAY_OBJECT_STORE_MEMORY_BYTES; do
     require_positive_int "$name"
 done
+[[ "$CPU_STARTUP_SMOKE" == "true" || "$CPU_STARTUP_SMOKE" == "false" ]] || die "CPU_STARTUP_SMOKE 必须为 true/false"
+if [[ "$CPU_STARTUP_SMOKE" == "true" ]]; then
+    [[ "$GPU_PER_NODE" == "0" && "$MODE" == "interactive" ]] || die "CPU启动验收仅允许GPU_PER_NODE=0、MODE=interactive"
+else
+    require_positive_int GPU_PER_NODE
+fi
 
 (( NNODES >= 2 )) || die "多节点任务要求 NNODES >= 2"
 (( GPU_PER_NODE <= 8 )) || die "单节点最多申请 8 张 GPU"
@@ -100,8 +107,11 @@ NORTHJOB_ARGS=(
     --k8s-queue "$K8S_QUEUE"
     --k8s-namespace "$K8S_NAMESPACE"
     --k8s-images "$K8S_IMAGE"
-    "$NODE_CMD"
 )
+if [[ "$CPU_STARTUP_SMOKE" == "true" ]]; then
+    NORTHJOB_ARGS+=(--user-env-var SLIME_CPU_STARTUP_SMOKE:1)
+fi
+NORTHJOB_ARGS+=("$NODE_CMD")
 
 echo "[INFO] job=$JOB_NAME mode=$MODE"
 echo "[INFO] resources=$NNODES nodes x $GPU_PER_NODE $GPU_RESOURCE GPU(s) = $((NNODES * GPU_PER_NODE)) GPUs"

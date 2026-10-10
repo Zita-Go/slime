@@ -119,3 +119,11 @@ def test_entrypoint_receipt_is_not_mislabelled_as_ray_ready(tmp_path, monkeypatc
     monkeypatch.setattr(startup.subprocess, "check_output", lambda *args, **kwargs: '{"items": []}')
     assert startup.main() == 0
     assert json.loads((tmp_path / "startup-status.json").read_text())["result_kind"] == "entrypoint-only"
+
+
+@pytest.mark.parametrize("cpu_mode, mode", [("false", "interactive"), ("true", "train")])
+def test_zero_gpu_launcher_cannot_accidentally_run_training(cpu_mode, mode):
+    env = {**os.environ, "CPU_STARTUP_SMOKE": cpu_mode, "MODE": mode, "GPU_PER_NODE": "0", "NNODES": "2", "ACTOR_NODES": "1", "ROLLOUT_NODES": "1", "DRY_RUN": "true"}
+    result = subprocess.run(["bash", str(ROOT / "scripts/northjob/launch_slime_multinode.sh")], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "[DRY-RUN]" not in result.stdout

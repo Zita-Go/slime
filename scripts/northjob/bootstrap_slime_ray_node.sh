@@ -46,6 +46,12 @@ export SLIME_ROLLOUT_GPUS=$((SLIME_ROLLOUT_NODES * EXPECTED_GPUS))
 
 echo "[INFO] host=$(hostname) rank=$NODE_RANK role=$ROLE node_ip=$NODE_IP master=$MASTER_ADDR"
 echo "[INFO] source=$REPO_ROOT actor_nodes=$SLIME_ACTOR_NODES rollout_nodes=$SLIME_ROLLOUT_NODES"
+if (( EXPECTED_GPUS == 0 )); then
+    [[ "${SLIME_CPU_STARTUP_SMOKE:-0}" == "1" && "$MODE" == "interactive" ]] || {
+        echo "[ERROR] 零GPU只允许显式CPU启动验收" >&2
+        exit 1
+    }
+fi
 
 python - <<'PY'
 import os
@@ -54,7 +60,8 @@ import slime
 import torch
 
 expected = int(os.environ["EXPECTED_GPUS"])
-assert torch.cuda.is_available(), "CUDA unavailable"
+if expected > 0:
+    assert torch.cuda.is_available(), "CUDA unavailable"
 assert torch.cuda.device_count() == expected, (
     f"expected {expected} GPUs, got {torch.cuda.device_count()}"
 )

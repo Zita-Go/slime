@@ -53,6 +53,8 @@ python3 scripts/northjob/check_slime_startup.py --job-name <JobAlias> \
 
 无GPU `train/raw` 入口诊断可增加 `--result-file northlaunch-smoke-rank0.json`；输出的result_kind为entrypoint-only，只验收SDK角色环境和镜像Python，不能用于启动GPU训练。正常集群检查的result_kind为ray-cluster。
 
+两个零GPU节点的Ray启动验收可设置 `CPU_STARTUP_SMOKE=true GPU_PER_NODE=0 NNODES=2 ACTOR_NODES=1 ROLLOUT_NODES=1 MEM_PER_POD=8 RAY_OBJECT_STORE_MEMORY_BYTES=536870912 MODE=interactive`。CPU模式必须显式开启且不能运行训练，默认仍为64卡配置；检查时使用 `--nodes 2 --gpus-per-node 0`，核验Alive=2/GPU=0。验收后用cluster.stop或平台删除命令释放诊断任务。
+
 ## 单节点开发 Pod
 
 默认只预览命令，不会提交：
