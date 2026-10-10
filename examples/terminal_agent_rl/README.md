@@ -22,6 +22,8 @@ Slime 与 NexTask 有各自固定的 Python 依赖。`bridge.py` 由 NexTask 的
 commit 7f746b9832fcedbab4904fdd39d200aab3120ec7
 ```
 
+GPU训练使用 `RL/vendor/nextask-runtime-py313/bin/python` 运行bridge。该Python 3.13虚拟环境链接到共享GPFS解释器，复用原NexTask虚拟环境的site-packages；不依赖CPU容器内的`/app/.venv`路径，也不向Slime的Python 3.12环境添加这些依赖。冻结runtime/NexAU源码和verifier身份保持原提交。CPU导出入口仍可使用原环境；`NEXTASK_RUNTIME_PYTHON`可显式覆盖训练配置。
+
 ## 导出训练集
 
 ```bash
