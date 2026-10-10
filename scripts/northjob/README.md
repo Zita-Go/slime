@@ -4,7 +4,7 @@
 
 ## 多节点训练集群
 
-默认只预览一个 8×8 H100（64卡）的 Ray 集群命令，其中 4 个节点用于 actor、4 个节点用于 rollout：
+默认以 dry-run 渲染一个 8×8 H100（64卡）的 Ray 集群清单，不调用提交 API，其中 4 个节点用于 actor、4 个节点用于 rollout：
 
 ```bash
 bash scripts/northjob/launch_slime_multinode.sh
@@ -38,6 +38,8 @@ MODE=train TRAIN_SCRIPT=/gpfs/.../train_terminal_agent.sh DRY_RUN=false \
 
 资源拓扑可以覆盖，例如回退到32卡时设置 `NNODES=4 ACTOR_NODES=2 ROLLOUT_NODES=2 GPU_PER_NODE=8`。启动器要求 `ACTOR_NODES + ROLLOUT_NODES == NNODES`。
 
+多节点提交通过仓库内 `submit_slime_northjob.py` 在 NorthJob 上传前加入 **必选 Pod 反亲和**：同一 Job 的训练 Pod 必须分布在不同的 `kubernetes.io/hostname` 上。仅设置 `nnodes=2` 不能保证两台物理机器。选择器只匹配本 Job，既有节点亲和配置保留；不修改共享 SDK。dry-run 会在 `RUN/<job-name>/` 写入真实 JSON/YAML，断开上传入口，正式提交前再次验证落盘清单。
+
 固定Slime镜像没有NorthJob runtime。多机入口通过 `--user-env-path` 在调用northlaunch之前source `prepare_northlaunch.sh`，只链接GPFS中固定版本的northlaunch，不激活共享环境或替换训练Python。可用 `NORTHLAUNCH_BIN` 覆盖共享入口；准备前后必须保持训练Python一致。设计见 [启动入口方案](RFC-launcher-entry.md)。
 
 共享目录从入口准备阶段即保存 `launcher-<rank>.log/.exit_code`；bootstrap在检查ROLE等变量之前保存 `node-<rank>-<role>.log/.exit_code`，因此入口失败也有证据。
@@ -50,6 +52,8 @@ python3 scripts/northjob/check_slime_startup.py --job-name <JobAlias> \
 ```
 
 该检查产出 `startup-status.json`；`waiting` 返回1，取得 `ready` 或 `failed` 结果后返回0。watch完成只表示结果已生成，后续必须检查JSON的status：只有ready才继续模型转换/训练；failed时先读错误和日志。Job终止、主容器退出（即使sidecar仍Running）或Job消失都会产生失败诊断，旧ready文件不能覆盖真实失败。
+
+结果包含每个 Pod 的 `physical_host` 与 `physical_host_count`；GPU 验收还要求期望数量的不同物理主机，两个同机 Ray 节点不能作为跨机器通过。CPU 入口诊断不强制物理分散，但仍报告宿主机数。
 
 无GPU `train/raw` 入口诊断可增加 `--result-file northlaunch-smoke-rank0.json`；输出的result_kind为entrypoint-only，只验收SDK角色环境和镜像Python，不能用于启动GPU训练。正常集群检查的result_kind为ray-cluster。
 

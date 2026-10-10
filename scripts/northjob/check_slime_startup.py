@@ -27,9 +27,14 @@ def classify(job, pods, marker, expected_nodes, expected_gpus):
             and not pod["metadata"].get("deletionTimestamp")
             and any(c.get("type") == "Ready" and c.get("status") == "True" for c in status.get("conditions", []))
         )
-        rows.append({"pod": pod["metadata"]["name"], "phase": status.get("phase"), "ready": ready, "gpus": gpu_count})
+        rows.append({"pod": pod["metadata"]["name"], "physical_host": pod["spec"].get("nodeName"), "phase": status.get("phase"), "ready": ready, "gpus": gpu_count})
     result["pods"] = rows
+    hosts = sorted({p["physical_host"] for p in rows if p["physical_host"]})
+    result["physical_hosts"] = hosts
+    result["physical_host_count"] = len(hosts)
     if marker and len(rows) == expected_nodes and all(p["ready"] and p["gpus"] == expected_gpus for p in rows):
+        if expected_gpus > 0 and len(hosts) != expected_nodes:
+            return {**result, "status": "failed", "reason": f"GPU Pod未分散到{expected_nodes}台物理主机，实际{len(hosts)}台"}
         result["status"] = "ready"
     return result
 

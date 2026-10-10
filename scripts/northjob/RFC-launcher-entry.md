@@ -21,3 +21,10 @@ NorthJob train/raw 会在 bootstrap 之前调用 northlaunch，因此不能在 b
 CPU回归验证PATH隔离、入口冲突/缺失、早期错误日志与启动结果分类。
 固定镜像的零GPU train/raw任务必须证明northlaunch可执行、角色环境齐全且用户命令仍用镜像Python。
 小规模Ray验证必须核验Alive节点数和GPU总量。零GPU通过不代表多机GPU训练已通过。
+
+## 物理主机分散（2026-10-10）
+
+2×2 GPU实测产生两个Ray节点，但两个Pod均落在node076；nnodes并不保证物理主机数。
+NorthJob CLI没有Pod反亲和选项。仓库内提交适配器仅在本进程包装SDK清单生成与上传函数，在保存/上传前加入同Job标签和按kubernetes.io/hostname的required Pod反亲和；不修改共享SDK文件、不硬绑某台机器、不扩大GPU申请。
+选择器只匹配本Job、同命名空间的Pod，同时保留已有nodeAffinity与其他标签。默认dry-run渲染真实清单但不调用上传API；正式提交再检查落盘清单并验证平台接受码，失败不自动重提。
+GPU启动结果必须报告真实spec.nodeName，物理主机数与期望节点数不符时失败；CPU入口诊断仍只验证Ray进程节点，并报告物理主机数以免混淆。

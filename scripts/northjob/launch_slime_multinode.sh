@@ -8,6 +8,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 DEFAULT_WORKSPACE=$(dirname -- "$REPO_ROOT")
 
 NORTHJOB_BIN=${NORTHJOB_BIN:-/gpfs/users/i-zhangguoqiang/envs/northjob-3.3.11/bin/northjob}
+NORTHJOB_PYTHON=${NORTHJOB_PYTHON:-$(dirname -- "$NORTHJOB_BIN")/python}
 NORTHLAUNCH_BIN=${NORTHLAUNCH_BIN:-$(dirname -- "$NORTHJOB_BIN")/northlaunch}
 JOB_NAME=${JOB_NAME:-slime-ray-8n8g-$(date -u +%Y%m%d-%H%M%S)}
 WORKSPACE=${WORKSPACE:-$DEFAULT_WORKSPACE}
@@ -41,6 +42,7 @@ require_positive_int() {
 }
 
 [[ -x "$NORTHJOB_BIN" ]] || die "NorthJob 不可执行: $NORTHJOB_BIN"
+[[ -x "$NORTHJOB_PYTHON" ]] || die "NorthJob SDK Python 不可执行: $NORTHJOB_PYTHON"
 [[ "$NORTHLAUNCH_BIN" == /* && -x "$NORTHLAUNCH_BIN" ]] || die "GPFS northlaunch 不可执行: $NORTHLAUNCH_BIN"
 [[ -d "$REPO_ROOT/.git" ]] || die "slime 仓库不存在: $REPO_ROOT"
 [[ -d "$WORKSPACE" && -w "$WORKSPACE" ]] || die "workspace 不存在或不可写: $WORKSPACE"
@@ -122,14 +124,12 @@ echo "[INFO] workspace=$WORKSPACE source=$REPO_ROOT ($(git -C "$REPO_ROOT" rev-p
 echo "[WARN] NorthJob 3.3.11 会强制任务可回收；正式训练仍可能被平台抢占。"
 
 if [[ "$DRY_RUN" == "true" ]]; then
-    printf 'NORTHJOB_NO_UPDATE_CHECK=1'
-    printf ' %q' "$NORTHJOB_BIN" "${NORTHJOB_ARGS[@]}"
-    printf '\n'
-    echo "[DRY-RUN] 未提交。使用 DRY_RUN=false 重新执行。"
+    NORTHJOB_NO_UPDATE_CHECK=1 "$NORTHJOB_PYTHON" "$SCRIPT_DIR/submit_slime_northjob.py" --dry-run -- "${NORTHJOB_ARGS[@]}"
+    echo "[DRY-RUN] 已生成含必选物理主机反亲和的清单，未调用提交 API。使用 DRY_RUN=false 重新执行。"
     exit 0
 fi
 
-NORTHJOB_NO_UPDATE_CHECK=1 "$NORTHJOB_BIN" "${NORTHJOB_ARGS[@]}"
+NORTHJOB_NO_UPDATE_CHECK=1 "$NORTHJOB_PYTHON" "$SCRIPT_DIR/submit_slime_northjob.py" -- "${NORTHJOB_ARGS[@]}"
 
 echo "[OK] NorthJob 已接受多节点任务: $JOB_NAME"
 echo "[INFO] 集群状态目录: $RUN_DIR"

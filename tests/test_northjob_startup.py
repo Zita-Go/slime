@@ -61,11 +61,11 @@ def _job(phase="Running"):
     return {"metadata": {"name": "actual-job"}, "status": {"state": {"phase": phase}}}
 
 
-def _pod(terminated=None, ready=True):
+def _pod(terminated=None, ready=True, node="node0"):
     state = {"terminated": terminated} if terminated else {"running": {}}
     return {
         "metadata": {"name": "pod"},
-        "spec": {"containers": [{"name": "master", "resources": {"limits": {"nvidia.com/gpu": "8"}}}]},
+        "spec": {"nodeName": node, "containers": [{"name": "master", "resources": {"limits": {"nvidia.com/gpu": "8"}}}]},
         "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True" if ready else "False"}], "containerStatuses": [{"name": "master", "state": state}]},
     }
 
@@ -82,11 +82,34 @@ def test_running_sidecar_does_not_hide_main_container_exit():
 
 
 def test_ready_requires_marker_and_complete_resources():
-    pods = [_pod() for _ in range(8)]
+    pods = [_pod(node=f"node{i}") for i in range(8)]
     assert startup.classify(_job(), pods, False, 8, 8)["status"] == "waiting"
     assert startup.classify(_job(), pods[:7], True, 8, 8)["status"] == "waiting"
     assert startup.classify(_job(), pods, True, 8, 4)["status"] == "waiting"
     assert startup.classify(_job(), pods, True, 8, 8)["status"] == "ready"
+
+
+@pytest.mark.parametrize("nodes", [("node0", "node0"), ("node0", None)])
+def test_ray_nodes_on_same_or_unknown_physical_host_are_not_gpu_ready(nodes):
+    result = startup.classify(_job(), [_pod(node=n) for n in nodes], True, 2, 8)
+    assert result["status"] == "failed"
+    assert result["physical_host_count"] == 1
+    assert "物理主机" in result["reason"]
+
+
+def test_distinct_physical_hosts_are_reported_in_gpu_ready_result():
+    result = startup.classify(_job(), [_pod(node="node-a"), _pod(node="node-b")], True, 2, 8)
+    assert result["status"] == "ready"
+    assert result["physical_hosts"] == ["node-a", "node-b"]
+
+
+def test_cpu_startup_keeps_process_node_scope():
+    pods = [_pod(), _pod()]
+    for pod in pods:
+        pod["spec"]["containers"][0]["resources"]["limits"] = {}
+    result = startup.classify(_job(), pods, True, 2, 0)
+    assert result["status"] == "ready"
+    assert result["physical_host_count"] == 1
 
 
 def test_bootstrap_records_missing_role_before_preflight(tmp_path):
