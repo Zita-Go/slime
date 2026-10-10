@@ -5,14 +5,14 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
-JOB_NAME=${1:?缺少 job-name}
+LAUNCH_JOB_ALIAS=${1:?缺少 job-name}
 NORTHLAUNCH_TARGET=${2:-/gpfs/users/i-zhangguoqiang/envs/northjob-3.3.11/bin/northlaunch}
 LINK_DIR=${NORTHLAUNCH_LINK_DIR:-/root/.local/bin}
-RUN_DIR=${NORTHLAUNCH_RUN_DIR:-$(dirname -- "$REPO_ROOT")/RUN/$JOB_NAME}
+RUN_DIR=${NORTHLAUNCH_RUN_DIR:-$(dirname -- "$REPO_ROOT")/RUN/$LAUNCH_JOB_ALIAS}
 NODE_ID=${RANK:-${HOSTNAME:-unknown}}
 NODE_ID=${NODE_ID//[^a-zA-Z0-9_.-]/_}
 
-[[ "$JOB_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "[ERROR] job-name 格式错误" >&2; return 1 2>/dev/null || exit 1; }
+[[ "$LAUNCH_JOB_ALIAS" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "[ERROR] job-name 格式错误" >&2; return 1 2>/dev/null || exit 1; }
 umask 077
 mkdir -p "$RUN_DIR"
 exec > >(tee -a "$RUN_DIR/launcher-${NODE_ID}.log") 2>&1

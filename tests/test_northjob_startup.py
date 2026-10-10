@@ -1,7 +1,9 @@
 """启动器准备必须保留训练Python并暴露初始化失败。"""
 
 import importlib.util
+import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -27,9 +29,10 @@ def _prepare(tmp_path, exit_code=0, collision=False, missing=False):
     if collision:
         (link_dir / "northlaunch").write_text("user-owned")
     run_dir = tmp_path / "run"
-    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "NORTHLAUNCH_LINK_DIR": str(link_dir), "NORTHLAUNCH_RUN_DIR": str(run_dir), "RANK": "0"}
+    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "NORTHLAUNCH_LINK_DIR": str(link_dir), "NORTHLAUNCH_RUN_DIR": str(run_dir), "RANK": "0", "JOB_NAME": "actual-cloud-job"}
+    check = 'import sys,os; print(sys.executable); assert os.environ["JOB_NAME"]=="actual-cloud-job"'
     result = subprocess.run(
-        ["bash", "-c", 'source "$1" test-job "$2" && python -c "import sys; print(sys.executable)"', "test", str(PREPARE), str(target)],
+        ["bash", "-c", 'source "$1" test-job "$2" && python -c ' + shlex.quote(check), "test", str(PREPARE), str(target)],
         env=env, capture_output=True, text=True,
     )
     return result, link_dir, run_dir
@@ -98,3 +101,21 @@ def test_bootstrap_records_missing_role_before_preflight(tmp_path):
     assert result.returncode != 0
     assert "NorthJob 未设置 ROLE" in result.stdout
     assert "bootstrap entered" in result.stdout
+
+
+def test_missing_job_waits_until_a_real_job_was_seen(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["check", "--job-name", "test-job", "--run-dir", str(tmp_path)])
+    monkeypatch.setattr(startup.subprocess, "check_output", lambda *args, **kwargs: '{"items": []}')
+    assert startup.main() == 1
+    assert startup.main() == 1
+    (tmp_path / "startup-status.json").write_text('{"actual_job": "known-job"}')
+    assert startup.main() == 0
+    assert json.loads((tmp_path / "startup-status.json").read_text())["status"] == "failed"
+
+
+def test_entrypoint_receipt_is_not_mislabelled_as_ray_ready(tmp_path, monkeypatch):
+    (tmp_path / "probe.json").write_text('{"ok": true}')
+    monkeypatch.setattr(sys, "argv", ["check", "--job-name", "test-job", "--run-dir", str(tmp_path), "--result-file", "probe.json"])
+    monkeypatch.setattr(startup.subprocess, "check_output", lambda *args, **kwargs: '{"items": []}')
+    assert startup.main() == 0
+    assert json.loads((tmp_path / "startup-status.json").read_text())["result_kind"] == "entrypoint-only"

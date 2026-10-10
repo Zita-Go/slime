@@ -51,6 +51,8 @@ python3 scripts/northjob/check_slime_startup.py --job-name <JobAlias> \
 
 该检查产出 `startup-status.json`；`waiting` 返回1，取得 `ready` 或 `failed` 结果后返回0。watch完成只表示结果已生成，后续必须检查JSON的status：只有ready才继续模型转换/训练；failed时先读错误和日志。Job终止、主容器退出（即使sidecar仍Running）或Job消失都会产生失败诊断，旧ready文件不能覆盖真实失败。
 
+无GPU `train/raw` 入口诊断可增加 `--result-file northlaunch-smoke-rank0.json`；输出的result_kind为entrypoint-only，只验收SDK角色环境和镜像Python，不能用于启动GPU训练。正常集群检查的result_kind为ray-cluster。
+
 ## 单节点开发 Pod
 
 默认只预览命令，不会提交：

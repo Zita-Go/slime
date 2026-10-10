@@ -8,7 +8,7 @@ from pathlib import Path
 
 def classify(job, pods, marker, expected_nodes, expected_gpus):
     phase = job.get("status", {}).get("state", {}).get("phase", "Unknown")
-    result = {"status": "waiting", "actual_job": job["metadata"]["name"], "job_phase": phase}
+    result = {"status": "waiting", "result_kind": "ray-cluster", "actual_job": job["metadata"]["name"], "job_phase": phase}
     if phase in {"Aborted", "Aborting", "Failed", "Terminated", "Completed", "Succeeded"}:
         return {**result, "status": "failed", "reason": f"Job进入终止状态{phase}"}
     rows = []
@@ -41,13 +41,23 @@ def main():
     parser.add_argument("--nodes", type=int, default=8)
     parser.add_argument("--gpus-per-node", type=int, default=8)
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--result-file", help="仅用于无GPU入口诊断的回执文件名，不代表Ray就绪")
     args = parser.parse_args()
 
     def get(*parts):
         return json.loads(subprocess.check_output(["kubectl", "get", *parts, "-n", args.namespace, "-o", "json"], text=True))
 
+    receipt = None
+    if args.result_file:
+        if Path(args.result_file).name != args.result_file:
+            parser.error("result-file必须是文件名")
+        path = args.run_dir / args.result_file
+        if path.exists():
+            receipt = json.loads(path.read_text())
     jobs = [j for j in get("jobs.batch.volcano.sh")["items"] if j.get("metadata", {}).get("annotations", {}).get("JobAlias") == args.job_name]
-    if not jobs:
+    if receipt is not None:
+        result = {"status": "ready" if receipt.get("ok") is True else "failed", "result_kind": "entrypoint-only", "receipt": receipt, "job_alias": args.job_name}
+    elif not jobs:
         previous = args.run_dir / "startup-status.json"
         seen = json.loads(previous.read_text()).get("actual_job") if previous.exists() else None
         result = {"status": "failed" if seen else "waiting", "reason": "未找到Job", "job_alias": args.job_name}
