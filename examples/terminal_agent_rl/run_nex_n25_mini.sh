@@ -249,7 +249,7 @@ echo "[INFO] model=$HF_CHECKPOINT data=$PROMPT_DATA"
 
 ray job submit --address=http://127.0.0.1:8265 \
     --runtime-env-json="$RUNTIME_ENV_JSON" \
-    -- python3 -u train.py \
+    -- python3 -u "$SLIME_DIR/train.py" \
     --actor-num-nodes "$ACTOR_NODES" \
     --actor-num-gpus-per-node "$ACTOR_GPUS_PER_NODE" \
     "${MODEL_ARGS[@]}" \
