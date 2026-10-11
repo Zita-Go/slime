@@ -15,7 +15,9 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
-from slime.utils.types import Sample
+import torch
+
+from slime.utils.types import Sample, _merge_rollout_top_p_token_data, _pad_rollout_top_p_offsets
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,8 @@ class TurnRecord:
     output_ids: list[int]
     finish_reason: str
     output_log_probs: list[float] = dataclasses.field(default_factory=list)
+    rollout_top_p_token_ids: list[int] | torch.Tensor | None = None
+    rollout_top_p_token_offsets: list[int] | torch.Tensor | None = None
     ill_formed: bool = False
 
 
@@ -163,6 +167,9 @@ class _SampleBuilder:
         self.tokens: list[int] = []
         self.loss_mask: list[int] = []
         self.logprobs: list[float] = []
+        self.top_p_token_ids: torch.Tensor | None = None
+        self.top_p_token_offsets: torch.Tensor | None = None
+        self.uses_top_p_replay: bool | None = None
         self.last_response_start_idx: int | None = None
         self.leading_prompt_len: int = 0
 
@@ -206,8 +213,18 @@ class _SampleBuilder:
 
         # --- append this turn's generated response (loss_mask=1 unless re-emitted as context) ---
         self.last_response_start_idx = len(self.tokens)
+        uses_top_p_replay = turn.rollout_top_p_token_ids is not None
+        if trained and turn.output_ids:
+            if self.uses_top_p_replay is None:
+                self.uses_top_p_replay = uses_top_p_replay
+            elif self.uses_top_p_replay != uses_top_p_replay:
+                raise ValueError("Sampler top-p replay metadata changed within one trajectory segment.")
         self._append_tokens(
-            turn.output_ids, loss_mask=int(trained), logprobs=turn.output_log_probs if trained else None
+            turn.output_ids,
+            loss_mask=int(trained),
+            logprobs=turn.output_log_probs if trained else None,
+            top_p_token_ids=turn.rollout_top_p_token_ids if trained else None,
+            top_p_token_offsets=turn.rollout_top_p_token_offsets if trained else None,
         )
 
         if is_first_turn:
@@ -222,8 +239,52 @@ class _SampleBuilder:
         self.tokens[response_start:] = tail
         self.loss_mask[response_start:] = [0] * len(tail)
         self.logprobs[response_start:] = [0.0] * len(tail)
+        if self.top_p_token_offsets is not None:
+            top_p_end = int(self.top_p_token_offsets[response_start])
+            self.top_p_token_ids = self.top_p_token_ids[:top_p_end]
+            self.top_p_token_offsets = torch.cat(
+                [
+                    self.top_p_token_offsets[: response_start + 1],
+                    self.top_p_token_offsets.new_full((len(tail),), top_p_end),
+                ]
+            )
 
-    def _append_tokens(self, ids: list[int], *, loss_mask: int, logprobs: list[float] | None = None) -> None:
+    def _append_tokens(
+        self,
+        ids: list[int],
+        *,
+        loss_mask: int,
+        logprobs: list[float] | None = None,
+        top_p_token_ids: list[int] | torch.Tensor | None = None,
+        top_p_token_offsets: list[int] | torch.Tensor | None = None,
+    ) -> None:
+        if (top_p_token_ids is None) != (top_p_token_offsets is None):
+            raise ValueError("Sampler top-p token ids and offsets must be provided together.")
+        if top_p_token_offsets is not None:
+            top_p_token_ids = torch.as_tensor(top_p_token_ids, dtype=torch.int32).reshape(-1)
+            top_p_token_offsets = torch.as_tensor(top_p_token_offsets, dtype=torch.int32).reshape(-1)
+            if (
+                len(top_p_token_offsets) != len(ids) + 1
+                or int(top_p_token_offsets[0]) != 0
+                or int(top_p_token_offsets[-1]) != len(top_p_token_ids)
+                or any(left > right for left, right in zip(top_p_token_offsets, top_p_token_offsets[1:], strict=False))
+            ):
+                raise ValueError("Invalid sampler top-p token ids/offsets for generated response.")
+            if self.top_p_token_offsets is None:
+                self.top_p_token_ids = torch.empty(0, dtype=torch.int32)
+                self.top_p_token_offsets = torch.zeros(len(self.tokens) + 1, dtype=torch.int32)
+            self.top_p_token_ids, self.top_p_token_offsets = _merge_rollout_top_p_token_data(
+                self.top_p_token_ids,
+                self.top_p_token_offsets,
+                top_p_token_ids,
+                top_p_token_offsets,
+            )
+        elif self.top_p_token_offsets is not None:
+            self.top_p_token_ids, self.top_p_token_offsets = _pad_rollout_top_p_offsets(
+                self.top_p_token_ids,
+                self.top_p_token_offsets,
+                len(ids),
+            )
         self.tokens.extend(ids)
         self.loss_mask.extend([loss_mask] * len(ids))
         self.logprobs.extend(logprobs if logprobs else [0.0] * len(ids))
@@ -244,6 +305,15 @@ class _SampleBuilder:
             tokens = tokens[:max_sample_tokens]
             loss_mask = loss_mask[:max_sample_tokens]
             logprobs = logprobs[:max_sample_tokens]
+        top_p_token_ids = None
+        top_p_token_offsets = None
+        if self.uses_top_p_replay:
+            assert self.top_p_token_ids is not None and self.top_p_token_offsets is not None
+            stop = len(tokens)
+            offset_base = int(self.top_p_token_offsets[start])
+            offset_end = int(self.top_p_token_offsets[stop])
+            top_p_token_ids = self.top_p_token_ids[offset_base:offset_end].clone()
+            top_p_token_offsets = self.top_p_token_offsets[start : stop + 1].clone() - offset_base
         md = dict(extra_metadata or {})
         return Sample(
             index=base_sample.index,
@@ -255,6 +325,8 @@ class _SampleBuilder:
             response_length=len(loss_mask) - start,
             loss_mask=loss_mask[start:],
             rollout_log_probs=logprobs[start:],
+            rollout_top_p_token_ids=top_p_token_ids,
+            rollout_top_p_token_offsets=top_p_token_offsets,
             reward=0.0,
             status=Sample.Status.COMPLETED,
             metadata=md,
@@ -296,6 +368,20 @@ class TrajectoryManager:
             f"turn.output_log_probs length {len(turn.output_log_probs)} != "
             f"turn.output_ids length {len(turn.output_ids)}"
         )
+        top_p_ids = turn.rollout_top_p_token_ids
+        top_p_offsets = turn.rollout_top_p_token_offsets
+        assert (top_p_ids is None) == (top_p_offsets is None), (
+            "rollout_top_p_token_ids and rollout_top_p_token_offsets must be provided together"
+        )
+        if top_p_offsets is not None:
+            top_p_ids = torch.as_tensor(top_p_ids, dtype=torch.int32).reshape(-1)
+            top_p_offsets = torch.as_tensor(top_p_offsets, dtype=torch.int32).reshape(-1)
+            assert (
+                len(top_p_offsets) == len(turn.output_ids) + 1
+                and int(top_p_offsets[0]) == 0
+                and int(top_p_offsets[-1]) == len(top_p_ids)
+                and all(left <= right for left, right in zip(top_p_offsets, top_p_offsets[1:], strict=False))
+            ), "invalid rollout top-p token ids/offsets"
 
         root = self._trees.setdefault(sid, MessageNode())
 

@@ -230,6 +230,67 @@ def test_openai_chat_completions_nonstream_records_token_segments():
     asyncio.run(run_case())
 
 
+def test_openai_multiturn_preserves_top_p_replay_metadata():
+    async def run_case():
+        tok = FakeTokenizer()
+        first_id = tok.encode("first")[0]
+        second_id = tok.encode("done")[0]
+        turn_meta = [
+            {"top_p_token_ids": [first_id, 901], "top_p_token_offsets": [0, 2]},
+            {"top_p_token_ids": [second_id, 902, 903], "top_p_token_offsets": [0, 3]},
+        ]
+        async with FakeSGLangServer(
+            [[(-0.3, first_id)], [(-0.2, second_id)]],
+            turn_meta=turn_meta,
+        ) as sglang:
+            adapter = openai.OpenAIAdapter(tokenizer=tok, sglang_url=sglang.url)
+            adapter.open_session(
+                "sid-top-p",
+                sampling_defaults={"top_p": 0.95, "custom_params": {"return_top_p_token_ids": True}},
+            )
+            client = TestClient(TestServer(adapter.app))
+            await client.start_server()
+            try:
+                first = await client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sid-top-p"},
+                    json={"model": "m", "messages": [{"role": "user", "content": "start"}]},
+                )
+                first_data = await first.json()
+                second = await client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sid-top-p"},
+                    json={
+                        "model": "m",
+                        "messages": [
+                            {"role": "user", "content": "start"},
+                            first_data["choices"][0]["message"],
+                            {"role": "user", "content": "continue"},
+                        ],
+                    },
+                )
+                await second.json()
+            finally:
+                await client.close()
+            samples = await _drain(adapter, "sid-top-p")
+
+        assert first.status == 200 and second.status == 200
+        assert len(samples) == 1
+        sample = samples[0]
+        assert sample.rollout_top_p_token_ids.tolist() == [first_id, 901, second_id, 902, 903]
+        assert len(sample.rollout_top_p_token_offsets) == sample.response_length + 1
+        for index, trained in enumerate(sample.loss_mask):
+            start, stop = sample.rollout_top_p_token_offsets[index : index + 2]
+            assert (stop > start) == bool(trained)
+        assert all(request["sampling_params"]["top_p"] == 0.95 for request in sglang.requests)
+        assert all(
+            request["sampling_params"]["custom_params"]["return_top_p_token_ids"]
+            for request in sglang.requests
+        )
+
+    asyncio.run(run_case())
+
+
 # ===========================================================================
 # §4 streaming SSE
 # ===========================================================================

@@ -25,6 +25,7 @@ from aiohttp import web
 
 from slime.agent.parsing import parse_model_output
 from slime.agent.trajectory import TrajectoryManager, TurnRecord
+from slime.utils.types import _extract_rollout_top_p_token_data
 
 
 __all__ = ["TurnRecord"]
@@ -510,6 +511,16 @@ async def call_sglang_generate(
         output_ids = [x[1] for x in output_token_logprobs]
         output_log_probs = [float(x[0]) for x in output_token_logprobs]
         finish = (meta.get("finish_reason") or {}).get("type", "stop") or "stop"
+        top_p_data = _extract_rollout_top_p_token_data(meta, expected_num_tokens=len(output_ids))
+        top_p_requested = sp.get("top_p") is not None and float(sp["top_p"]) < 1
+        if top_p_requested and output_ids and top_p_data is None:
+            raise ValueError("Agent top-p sampling requires token ids and offsets for every generated token.")
+        if top_p_data is not None:
+            top_p_token_ids, top_p_token_offsets = top_p_data
+        elif top_p_requested:
+            top_p_token_ids, top_p_token_offsets = [], [0]
+        else:
+            top_p_token_ids = top_p_token_offsets = None
     except (asyncio.CancelledError, aiohttp.ClientError, asyncio.TimeoutError) as e:
         # free the sglang slot eagerly on client cancel/timeout, else the
         # orphaned generation keeps occupying KV until its own length cap
@@ -522,6 +533,8 @@ async def call_sglang_generate(
         output_ids=output_ids,
         finish_reason=finish,
         output_log_probs=output_log_probs,
+        rollout_top_p_token_ids=top_p_token_ids,
+        rollout_top_p_token_offsets=top_p_token_offsets,
     )
 
 

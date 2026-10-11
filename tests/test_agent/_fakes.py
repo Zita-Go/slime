@@ -150,8 +150,16 @@ class FakeSGLangServer:
     Use as an async context manager; ``.url`` is the base url to hand the adapter.
     """
 
-    def __init__(self, turns: list[list[tuple[float, int]]], *, finish_reason: str = "stop") -> None:
+    def __init__(
+        self,
+        turns: list[list[tuple[float, int]]],
+        *,
+        finish_reason: str = "stop",
+        turn_meta: list[dict] | None = None,
+    ) -> None:
         self.turns = [list(t) for t in turns]
+        self.turn_meta = [dict(meta) for meta in (turn_meta or [{} for _ in turns])]
+        assert len(self.turn_meta) == len(self.turns)
         self.finish_reason = finish_reason
         self.requests: list[dict] = []
         self.routing_keys: list[str | None] = []
@@ -163,11 +171,13 @@ class FakeSGLangServer:
         self.requests.append(await request.json())
         assert self.turns, "unexpected /generate call (turn script exhausted)"
         pairs = self.turns.pop(0)
+        meta = self.turn_meta.pop(0)
         return web.json_response(
             {
                 "meta_info": {
                     "output_token_logprobs": [[lp, tid] for lp, tid in pairs],
                     "finish_reason": {"type": self.finish_reason},
+                    **meta,
                 }
             }
         )

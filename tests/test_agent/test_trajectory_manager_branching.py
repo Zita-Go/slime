@@ -220,12 +220,22 @@ def drift_replace(ids: list[int], at: int, sentinel: int = _DRIFT_BAND + 2) -> l
     return out
 
 
-def turn(prompt_ids, response_ids, *, finish_reason="stop", logprobs=None) -> TurnRecord:
+def turn(
+    prompt_ids,
+    response_ids,
+    *,
+    finish_reason="stop",
+    logprobs=None,
+    top_p_token_ids=None,
+    top_p_token_offsets=None,
+) -> TurnRecord:
     return TurnRecord(
         prompt_ids=list(prompt_ids),
         output_ids=list(response_ids),
         finish_reason=finish_reason,
         output_log_probs=list(logprobs) if logprobs is not None else [],
+        rollout_top_p_token_ids=list(top_p_token_ids) if top_p_token_ids is not None else None,
+        rollout_top_p_token_offsets=list(top_p_token_offsets) if top_p_token_offsets is not None else None,
     )
 
 
@@ -256,6 +266,8 @@ def append(
     finish_reason="stop",
     logprobs=None,
     response_message=None,
+    top_p_token_ids=None,
+    top_p_token_offsets=None,
 ):
     p = list(prompt_ids) if prompt_ids is not None else render_prompt(prompt_msgs)
     if response_ids is not None:
@@ -281,7 +293,14 @@ def append(
     )
     mgr.record_turn(
         sid,
-        turn=turn(p, r, finish_reason=finish_reason, logprobs=lp),
+        turn=turn(
+            p,
+            r,
+            finish_reason=finish_reason,
+            logprobs=lp,
+            top_p_token_ids=top_p_token_ids,
+            top_p_token_offsets=top_p_token_offsets,
+        ),
         prompt_messages=messages(prompt_msgs),
         response_message=rmsg,
     )
@@ -1159,6 +1178,92 @@ def test_4_2_logprobs_length_mismatch_raises():
         assert "output_log_probs" in str(e)
     assert raised, "expected AssertionError on logprobs/ids length mismatch"
     print("PASS 4.2")
+
+
+def test_4_2b_top_p_replay_survives_clean_turns_and_token_fork():
+    mgr = TrajectoryManager()
+    sid = "4.2b"
+    s, u = sys_msg("S"), usr_msg("u")
+    a1, t1 = asst_msg("a1"), tool_msg("t1")
+    a2, t2 = asst_msg("a2"), tool_msg("t2")
+
+    r1 = render_response("a1")
+    first_ids = [r1[0], 8101, r1[1], 8102]
+    append(
+        mgr,
+        sid,
+        [s, u],
+        "a1",
+        top_p_token_ids=first_ids,
+        top_p_token_offsets=[0, 2, 4],
+    )
+    _, r2 = append(
+        mgr,
+        sid,
+        [s, u, a1, t1],
+        "a2",
+        top_p_token_ids=[_asst_body("a2"), 8201, _BANDS["assistant"] + 9, 8202],
+        top_p_token_offsets=[0, 2, 4],
+    )
+    p3 = drift(render_prompt([s, u, a1, t1, a2, t2]), 1)
+    append(
+        mgr,
+        sid,
+        [s, u, a1, t1, a2, t2],
+        "a3",
+        prompt_ids=p3,
+        top_p_token_ids=[_asst_body("a3"), 8301, _BANDS["assistant"] + 9, 8302],
+        top_p_token_offsets=[0, 2, 4],
+    )
+
+    samples = get_traj(mgr, sid, base_sample=Sample(index=0, prompt=""), reward=1.0)
+    assert len(samples) == 2
+    assert samples[0].rollout_top_p_token_ids.tolist() == first_ids + [r2[0], 8201, r2[1], 8202]
+    for sample in samples:
+        assert len(sample.rollout_top_p_token_offsets) == sample.response_length + 1
+        for index, trained in enumerate(sample.loss_mask):
+            start, stop = sample.rollout_top_p_token_offsets[index : index + 2]
+            assert (stop > start) == bool(trained)
+    print("PASS 4.2b")
+
+
+def test_4_2c_top_p_replay_drops_realigned_response_support():
+    mgr = TrajectoryManager()
+    sid = "4.2c"
+    s, u = sys_msg("S"), usr_msg("u")
+    a1, t1 = asst_msg("a1"), tool_msg("t1")
+    p1 = render_prompt([s, u])
+    r1 = render_response("a1")
+    append(
+        mgr,
+        sid,
+        [s, u],
+        "a1",
+        top_p_token_ids=[r1[0], 8401, r1[1], 8402],
+        top_p_token_offsets=[0, 2, 4],
+    )
+    p2 = drift_replace(render_prompt([s, u, a1, t1]), len(p1))
+    r2 = render_response("a2")
+    second_ids = [r2[0], 8501, r2[1], 8502]
+    append(
+        mgr,
+        sid,
+        [s, u, a1, t1],
+        "a2",
+        prompt_ids=p2,
+        top_p_token_ids=second_ids,
+        top_p_token_offsets=[0, 2, 4],
+    )
+
+    samples = get_traj(mgr, sid, base_sample=Sample(index=0, prompt=""), reward=1.0)
+    assert len(samples) == 1
+    sample = samples[0]
+    assert sample.rollout_top_p_token_ids.tolist() == second_ids
+    assert len(sample.rollout_top_p_token_offsets) == sample.response_length + 1
+    for index, trained in enumerate(sample.loss_mask):
+        start, stop = sample.rollout_top_p_token_offsets[index : index + 2]
+        assert (stop > start) == bool(trained)
+    print("PASS 4.2c")
 
 
 def test_4_3_empty_prompt_messages_skipped():
