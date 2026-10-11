@@ -35,7 +35,7 @@ import queue
 import threading
 import time
 
-from slime.rollout.base_types import RolloutFnTrainOutput, finalize_rollout_groups
+from slime.rollout.base_types import RolloutFnTrainOutput, finalize_rollout_groups, iter_samples
 from slime.rollout.filter_hub.base_types import call_dynamic_filter
 from slime.rollout.sglang_rollout import GenerateState, generate_and_rm_group
 from slime.utils.async_utils import run
@@ -94,7 +94,7 @@ class AsyncRolloutWorker:
         # and freeze every in-flight generation. Backpressure lives in _loop()
         # instead, which stops topping up while a full pool of completed groups
         # is already waiting to be consumed.
-        self.output_queue: queue.Queue[tuple[int, list[Sample]]] = queue.Queue()
+        self.output_queue: queue.Queue[tuple[int, list[Sample] | list[list[Sample]]]] = queue.Queue()
         self.poll_interval = 1.0
         self.worker_thread: threading.Thread | None = None
         self.state = GenerateState(args)
@@ -111,7 +111,7 @@ class AsyncRolloutWorker:
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5)
 
-    def get_completed_groups(self, limit: int | None = None) -> list[tuple[int, list[Sample]]]:
+    def get_completed_groups(self, limit: int | None = None) -> list[tuple[int, list[Sample] | list[list[Sample]]]]:
         """Pop up to ``limit`` completed groups (all of them when ``None``).
 
         Callers that only need a fixed number of groups must pass ``limit`` —
@@ -119,7 +119,7 @@ class AsyncRolloutWorker:
         these groups are fully generated and reward-scored, with their prompts
         already consumed from ``data_buffer``.
         """
-        completed: list[tuple[int, list[Sample]]] = []
+        completed: list[tuple[int, list[Sample] | list[list[Sample]]]] = []
         while limit is None or len(completed) < limit:
             try:
                 completed.append(self.output_queue.get_nowait())
@@ -208,7 +208,7 @@ class AsyncRolloutWorker:
                 )
                 return
             # Aborted group → requeue, don't ship to training.
-            if any(getattr(s, "status", None) == Sample.Status.ABORTED for s in result):
+            if any(sample.status == Sample.Status.ABORTED for sample in iter_samples(result)):
                 try:
                     self.data_buffer.add_samples([result])
                 except Exception:  # noqa: BLE001

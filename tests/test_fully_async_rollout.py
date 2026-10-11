@@ -48,6 +48,7 @@ import pytest
 
 import slime.rollout.fully_async_rollout as fa
 from slime.rollout.filter_hub.base_types import DynamicFilterOutput
+from slime.rollout.filter_hub.dynamic_sampling_filters import check_reward_nonzero_std
 from slime.utils.staleness import compute_staleness_metrics, sample_staleness
 from slime.utils.types import Sample
 
@@ -170,6 +171,42 @@ def test_dynamic_filter_drops_groups_and_refills(monkeypatch):
     assert result.metrics["rollout/dynamic_filter/dropped_ratio"] == 0.5
     assert result.metrics["rollout/dynamic_filter/drop_even"] == 3
     assert [gid for gid, _ in worker.get_completed_groups()] == [6, 7]
+
+
+@pytest.mark.unit
+def test_reward_std_filter_accepts_nested_custom_generation_samples():
+    args = SimpleNamespace(reward_key=None)
+    nested_group = [
+        [Sample(reward=0.0), Sample(reward=0.0)],
+        [Sample(reward=1.0), Sample(reward=1.0)],
+    ]
+
+    assert bool(check_reward_nonzero_std(args, nested_group).keep)
+
+    for sample in nested_group[1]:
+        sample.reward = 0.0
+    output = check_reward_nonzero_std(args, nested_group)
+    assert not bool(output.keep)
+    assert output.reason == "zero_std_0.0"
+
+
+@pytest.mark.unit
+def test_done_callback_requeues_nested_aborted_group(monkeypatch):
+    data_buffer = _FakeDataBuffer([])
+    worker = _make_worker(monkeypatch, data_buffer=data_buffer)
+    nested_group = [
+        [Sample(status=Sample.Status.COMPLETED)],
+        [Sample(status=Sample.Status.ABORTED)],
+    ]
+
+    class _DoneTask:
+        def result(self):
+            return nested_group
+
+    worker._make_done_cb(0)(_DoneTask())
+
+    assert data_buffer.requeued == [nested_group]
+    assert worker.queue_size() == 0
 
 
 @pytest.mark.unit
