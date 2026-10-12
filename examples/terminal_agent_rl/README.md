@@ -121,6 +121,8 @@ Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke �
 
 正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 32K token 动态打包。
 
+`LOG_PROBS_CHUNK_SIZE` 默认1024，控制词表 logits 生成后的 logprob 计算分块。若这一步 CUDA OOM，可用 `LOG_PROBS_CHUNK_SIZE=128` 验证更低的临时显存峰值；它不缩小完整 logits 张量，不改变上下文长度、采样参数或 GRPO 组大小。
+
 `SGLANG_SERVER_CONCURRENCY=4` 与16个engine对应64条在途轨迹、约4个同题组并发；128条轨迹不要求同时启动。启动sandbox的并发仍限制为16。单轨迹GPU smoke继续使用n=1且不更新模型。
 
 ```bash
