@@ -189,8 +189,7 @@ MISC_ARGS=(
     --accumulate-allreduce-grads-in-fp32
     --attention-softmax-in-fp32
     --attention-backend flash
-    --moe-token-dispatcher-type flex
-    --moe-enable-deepep
+    --moe-token-dispatcher-type alltoall
 )
 
 export NEXTASK_RUNTIME_ROOT NEXTASK_RUNTIME_PYTHON TERMINAL_RL_E2B_CONFIG_FILE E2B_VENDOR_DIR

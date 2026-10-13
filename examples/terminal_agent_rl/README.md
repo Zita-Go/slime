@@ -117,6 +117,8 @@ Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke �
 
 EP=16将每卡专家数从32降至16，保留FP32梯度累积/归约和原有采样预算。专家权重及梯度理论每卡减少约11.25 GiB；净显存收益、跨机通信开销和完整参数更新仍需实测。可用 `EP_SIZE` 显式覆盖。
 
+训练端MoE默认使用Megatron原生 `alltoall` dispatcher。EP16配合DeepEP/Flex时实测进程总显存与PyTorch分配显存相差约十几GiB，12K microbatch仍在反向阶段OOM；切换 `alltoall` 用于减少持久通信缓冲，可能牺牲MoE通信吞吐。该变化不修改模型精度、专家路由或训练样本预算。
+
 当前模型有2个KV groups；现有Megatron output gate路径在TP大于2时没有与Query同步切分gate，TP=4实测在首个ref forward出现形状不匹配。因此本模型保留TP=2，通过CP=16降低完整logits和top-p mask的每卡显存；该配置仍需真实forward、反向及参数更新验收。
 
 ## 多机训练
