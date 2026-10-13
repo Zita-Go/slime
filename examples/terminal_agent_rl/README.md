@@ -113,7 +113,7 @@ JOB_NAME=<NorthJob JobAlias> bash examples/terminal_agent_rl/run_gpu_smokes.sh
 
 第一阶段要求普通对话和强制 `bash` tool call 都通过 OpenAI-compatible API；第二阶段使用 `--debug-rollout-only`，并检查落盘样本的 token、loss mask、rollout logprob、reward 和确定性 verifier verdict。总回执写入 `RUN/<job>/gpu-smokes-receipt.json`。
 
-Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke 和正式训练默认都使用该值；初始题面最长仅 1,704 tokens，Slime smoke 与正式训练的 prompt 过滤上限均为 65,536（64K）。64卡训练默认使用 TP=2、CP=16，使每个 CP rank 的 token 上限保持在约16K；32张actor卡对应DP=1，PP=1、EP=16、Expert TP=1。
+Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke 和正式训练默认都使用该值；初始题面最长仅 1,704 tokens，Slime smoke 与正式训练的 prompt 过滤上限均为 65,536（64K）。64卡训练默认使用 TP=2、CP=16；训练侧动态打包上限由 `MAX_TOKENS_PER_GPU` 控制，默认12,288。32张actor卡对应DP=1，PP=1、EP=16、Expert TP=1。
 
 EP=16将每卡专家数从32降至16，保留FP32梯度累积/归约和原有采样预算。专家权重及梯度理论每卡减少约11.25 GiB；净显存收益、跨机通信开销和完整参数更新仍需实测。可用 `EP_SIZE` 显式覆盖。
 
@@ -123,7 +123,7 @@ EP=16将每卡专家数从32降至16，保留FP32梯度累积/归约和原有采
 
 默认拓扑为 8×8 H100（64卡），其中 4 节点训练 actor、4 节点运行 16 个 TP=2 rollout engine：
 
-正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 16K token 动态打包。
+正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 12K token动态打包。降低 `MAX_TOKENS_PER_GPU` 不截断轨迹或改变global batch，但会增加microbatch数；超过上限的单条长轨迹仍会独占一个microbatch。
 
 `LOG_PROBS_CHUNK_SIZE` 默认1024，控制词表 logits 生成后的 logprob 计算分块。若这一步 CUDA OOM，可用 `LOG_PROBS_CHUNK_SIZE=128` 验证更低的临时显存峰值；它不缩小完整 logits 张量，不改变上下文长度、采样参数或 GRPO 组大小。
 

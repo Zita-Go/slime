@@ -33,6 +33,7 @@ NUM_ROLLOUT=${NUM_ROLLOUT:-100}
 SAVE_INTERVAL=${SAVE_INTERVAL:-5}
 SGLANG_SERVER_CONCURRENCY=${SGLANG_SERVER_CONCURRENCY:-4}
 LOG_PROBS_CHUNK_SIZE=${LOG_PROBS_CHUNK_SIZE:-1024}
+MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-12288}
 
 TP_SIZE=${TP_SIZE:-2}
 PP_SIZE=${PP_SIZE:-1}
@@ -51,6 +52,7 @@ die() {
 }
 
 [[ "$LOG_PROBS_CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]] || die "LOG_PROBS_CHUNK_SIZE 必须是正整数"
+[[ "$MAX_TOKENS_PER_GPU" =~ ^[1-9][0-9]*$ ]] || die "MAX_TOKENS_PER_GPU 必须是正整数"
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || die "HF checkpoint 不完整: $HF_CHECKPOINT"
 [[ -f "$HF_CHECKPOINT/chat_template.jinja" ]] || die "缺少 chat template: $HF_CHECKPOINT/chat_template.jinja"
@@ -142,7 +144,7 @@ PERF_ARGS=(
     --recompute-method uniform
     --recompute-num-layers 1
     --use-dynamic-batch-size
-    --max-tokens-per-gpu $((MAX_CONTEXT_LEN / CP_SIZE))
+    --max-tokens-per-gpu "$MAX_TOKENS_PER_GPU"
     --log-probs-chunk-size "$LOG_PROBS_CHUNK_SIZE"
 )
 
