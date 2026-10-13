@@ -113,13 +113,15 @@ JOB_NAME=<NorthJob JobAlias> bash examples/terminal_agent_rl/run_gpu_smokes.sh
 
 第一阶段要求普通对话和强制 `bash` tool call 都通过 OpenAI-compatible API；第二阶段使用 `--debug-rollout-only`，并检查落盘样本的 token、loss mask、rollout logprob、reward 和确定性 verifier verdict。总回执写入 `RUN/<job>/gpu-smokes-receipt.json`。
 
-Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke 和正式训练默认都使用该值；初始题面最长仅 1,704 tokens，Slime smoke 与正式训练的 prompt 过滤上限均为 65,536（64K）。64卡训练默认使用 CP=8，使每个 CP rank 的 token 上限保持在约32K。
+Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke 和正式训练默认都使用该值；初始题面最长仅 1,704 tokens，Slime smoke 与正式训练的 prompt 过滤上限均为 65,536（64K）。64卡训练默认使用 TP=2、CP=16，使每个 CP rank 的 token 上限保持在约16K；32张actor卡对应DP=1，PP=1、EP=8、Expert TP=1。
+
+当前模型有2个KV groups；现有Megatron output gate路径在TP大于2时没有与Query同步切分gate，TP=4实测在首个ref forward出现形状不匹配。因此本模型保留TP=2，通过CP=16降低完整logits和top-p mask的每卡显存；该配置仍需真实forward、反向及参数更新验收。
 
 ## 多机训练
 
 默认拓扑为 8×8 H100（64卡），其中 4 节点训练 actor、4 节点运行 16 个 TP=2 rollout engine：
 
-正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 32K token 动态打包。
+正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 16K token 动态打包。
 
 `LOG_PROBS_CHUNK_SIZE` 默认1024，控制词表 logits 生成后的 logprob 计算分块。若这一步 CUDA OOM，可用 `LOG_PROBS_CHUNK_SIZE=128` 验证更低的临时显存峰值；它不缩小完整 logits 张量，不改变上下文长度、采样参数或 GRPO 组大小。
 
