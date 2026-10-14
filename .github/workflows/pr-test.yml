@@ -622,6 +622,10 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_megatron_output_gate_tp_patch.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_stateless_adam.py"
             },
             {

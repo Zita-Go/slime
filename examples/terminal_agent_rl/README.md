@@ -119,7 +119,7 @@ EP=32将每卡专家数从16降至8，保留FP32梯度累积/归约和原有采�
 
 训练端MoE默认使用Megatron原生 `alltoall` dispatcher。EP16配合DeepEP/Flex时实测进程总显存与PyTorch分配显存相差约十几GiB，12K microbatch仍在反向阶段OOM；切换 `alltoall` 用于减少持久通信缓冲，可能牺牲MoE通信吞吐。该变化不修改模型精度、专家路由或训练样本预算。
 
-当前模型有2个KV groups；现有Megatron output gate路径在TP大于2时没有与Query同步切分gate，TP=4实测在首个ref forward出现形状不匹配。因此本模型保留TP=2，通过CP=32降低完整logits和top-p mask的每卡显存；该配置仍需真实forward、反向及参数更新验收。
+当前模型有2个KV groups；旧固定镜像的Megatron output gate路径在TP大于2时没有与Query同步切分gate，TP=4历史实测在首个ref forward出现形状不匹配。当前stable/latest补丁已回移NVIDIA #3529修复，TP2/TP4/TP8的CPU切片及梯度回归通过；已有不可变镜像须显式应用gate补丁，再执行[GPU诊断](../../docker/README.md)，完整GPU模型训练仍需验证。当前排队96卡任务继续保持TP=2/CP=32/EP=32，不因加入修复而自动切换拓扑。
 
 ## 多机训练
 

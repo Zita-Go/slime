@@ -48,6 +48,12 @@ The following components are pinned and rebuilt in the image:
 
 - Megatron-LM `1dcf0dafa884ad52ffb243625717a3471643e087`, plus
   `docker/patch/<version>/megatron.patch`.
+  The active stable and latest patches include the output-gate TP slicing fix
+  from [NVIDIA/Megatron-LM#3529](https://github.com/NVIDIA/Megatron-LM/pull/3529)
+  (`2e4a5d48c9199a52167322d4c7682f75bdcd173b`). It fixes gated attention when
+  TP exceeds the KV/query-group count; it does not change model weights or precision.
+  Existing immutable images still require a rebuild or explicit application of
+  this hunk before exercising TP4/TP8.
 - DeepGEMM `b38a77cd193cf38f670caae192310521d24343be` from the
   `zhuzilin/DeepGEMM` batch-invariant branch, rebuilt as an SGLang-compatible wheel.
 - DeepEP `6845ffd9d59126ec0030c13e0e155935a61e5b5a` from the
@@ -55,3 +61,19 @@ The following components are pinned and rebuilt in the image:
 
 For a non-default GPU architecture list, pass
 `--build-arg DEEPEP_CUDA_ARCH_LIST='<torch arch list>'`.
+
+For an already queued immutable image, apply only the gate hunk to its pinned
+Megatron checkout before running the manually invoked GPU diagnostic:
+
+```bash
+python tools/smoke_megatron_output_gate.py --apply-only --megatron-root /root/Megatron-LM
+torchrun --standalone --nproc-per-node=4 tools/smoke_megatron_output_gate.py --tp-size 4 --receipt /path/to/new/tp4-gate.json
+torchrun --standalone --nproc-per-node=8 tools/smoke_megatron_output_gate.py --tp-size 8 --receipt /path/to/new/tp8-gate.json
+```
+
+Use an idle GPU Pod from the existing allocation; these commands do not restart
+Ray or submit a GPU job. The diagnostic covers real Megatron/Transformer Engine
+gated-attention forward/backward with and without sequence parallelism, not full
+model RL or its optimizer. Receipts are never overwritten. The CPU patch
+regression is registered in CI as `test_megatron_output_gate_tp_patch.py` and
+checks TP2/TP4/TP8 against unsharded forward and gradient references.
