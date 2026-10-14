@@ -113,25 +113,26 @@ JOB_NAME=<NorthJob JobAlias> bash examples/terminal_agent_rl/run_gpu_smokes.sh
 
 第一阶段要求普通对话和强制 `bash` tool call 都通过 OpenAI-compatible API；第二阶段使用 `--debug-rollout-only`，并检查落盘样本的 token、loss mask、rollout logprob、reward 和确定性 verifier verdict。总回执写入 `RUN/<job>/gpu-smokes-receipt.json`。
 
-Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke 和正式训练默认都使用该值；初始题面最长仅 1,704 tokens，Slime smoke 与正式训练的 prompt 过滤上限均为 65,536（64K）。64卡训练默认使用 TP=2、CP=16；训练侧动态打包上限由 `MAX_TOKENS_PER_GPU` 控制，默认12,288。32张actor卡对应DP=1，PP=1、EP=16、Expert TP=1。
+Nex-N2.5-mini 的原生上下文窗口为 262,144 tokens（256K）。GPU smoke 和正式训练默认都使用该值；初始题面最长仅 1,704 tokens，Slime smoke 与正式训练的 prompt 过滤上限均为 65,536（64K）。正式训练默认使用64张actor卡，TP=2、CP=32、DP=1、PP=1、EP=32、Expert TP=1；另有32张rollout卡，总共96卡。训练侧动态打包上限由 `MAX_TOKENS_PER_GPU` 控制，默认8,192。
 
-EP=16将每卡专家数从32降至16，保留FP32梯度累积/归约和原有采样预算。专家权重及梯度理论每卡减少约11.25 GiB；净显存收益、跨机通信开销和完整参数更新仍需实测。可用 `EP_SIZE` 显式覆盖。
+EP=32将每卡专家数从16降至8，保留FP32梯度累积/归约和原有采样预算。相对上一轮EP=16，专家BF16权重及FP32梯度理论每卡减少约5.625 GiB。CP=32进一步分摊长序列；真实旧dump重放时，配合8K打包目标，最大局部token从14,080降到8,448。两份FP32 logits加bool mask的对应张量体积约减少5.86 GiB；该估算不能与专家存储节省直接相加作为实测峰值下降。完整ref、反向、梯度归约和参数更新仍需GPU验收；`CP_SIZE`、`EP_SIZE`均可显式覆盖。
 
 训练端MoE默认使用Megatron原生 `alltoall` dispatcher。EP16配合DeepEP/Flex时实测进程总显存与PyTorch分配显存相差约十几GiB，12K microbatch仍在反向阶段OOM；切换 `alltoall` 用于减少持久通信缓冲，可能牺牲MoE通信吞吐。该变化不修改模型精度、专家路由或训练样本预算。
 
-当前模型有2个KV groups；现有Megatron output gate路径在TP大于2时没有与Query同步切分gate，TP=4实测在首个ref forward出现形状不匹配。因此本模型保留TP=2，通过CP=16降低完整logits和top-p mask的每卡显存；该配置仍需真实forward、反向及参数更新验收。
+当前模型有2个KV groups；现有Megatron output gate路径在TP大于2时没有与Query同步切分gate，TP=4实测在首个ref forward出现形状不匹配。因此本模型保留TP=2，通过CP=32降低完整logits和top-p mask的每卡显存；该配置仍需真实forward、反向及参数更新验收。
 
 ## 多机训练
 
-默认拓扑为 8×8 H100（64卡），其中 4 节点训练 actor、4 节点运行 16 个 TP=2 rollout engine：
+本训练入口的默认拓扑为12×8 H100（96卡），其中8节点训练actor、4节点运行16个TP=2 rollout engine。通用NorthJob启动器仍默认8节点；本模型须显式传入 `NNODES=12 ACTOR_NODES=8 ROLLOUT_NODES=4`，不能直接沿用旧64卡申请：
 
-正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每 CP rank 12K token动态打包。降低 `MAX_TOKENS_PER_GPU` 不截断轨迹或改变global batch，但会增加microbatch数；超过上限的单条长轨迹仍会独占一个microbatch。
+正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每CP rank 8K token动态打包。降低 `MAX_TOKENS_PER_GPU` 不截断轨迹或改变global batch，但会增加microbatch数；超过上限的单条长轨迹仍会独占一个microbatch，padding也可能使实际局部长度略高于目标。
 
 `LOG_PROBS_CHUNK_SIZE` 默认1024，控制词表 logits 生成后的 logprob 计算分块。若这一步 CUDA OOM，可用 `LOG_PROBS_CHUNK_SIZE=128` 验证更低的临时显存峰值；它不缩小完整 logits 张量，不改变上下文长度、采样参数或 GRPO 组大小。
 
 `SGLANG_SERVER_CONCURRENCY=4` 与16个engine对应64条在途轨迹、约4个同题组并发；128条轨迹不要求同时启动。启动sandbox的并发仍限制为16。单轨迹GPU smoke继续使用n=1且不更新模型。
 
 ```bash
+NNODES=12 ACTOR_NODES=8 ROLLOUT_NODES=4 \
 MODE=train \
 TRAIN_SCRIPT=/gpfs/users/i-zhangguoqiang/terminal-code/RL/slime/examples/terminal_agent_rl/run_nex_n25_mini.sh \
 DRY_RUN=false \
