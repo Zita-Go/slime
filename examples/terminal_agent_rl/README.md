@@ -125,6 +125,8 @@ EP=32将每卡专家数从16降至8，保留FP32梯度累积/归约和原有采�
 
 本训练入口的默认拓扑为12×8 H100（96卡），其中8节点训练actor、4节点运行16个TP=2 rollout engine。通用NorthJob启动器仍默认8节点；本模型须显式传入 `NNODES=12 ACTOR_NODES=8 ROLLOUT_NODES=4`，不能直接沿用旧64卡申请：
 
+启动器分别校验attention分组的 `TP×PP×CP` 与expert分组的 `ETP×EP×PP` 能否整除actor卡数，遵循Megatron parallel folding，不能将attention TP直接乘到EP上。TP8验证时必须重新选择CP/PP，不能叠加当前CP32。单个gate诊断通过之后仍需全模型前向、反向、梯度归约及显存验收；当前线性注意力适配会聚合序列并重复计算，不能假设所有层都按TP8分摊。只有完整TP8验证通过后才逐项回退OOM缓解配置。
+
 正式训练默认 `N_SAMPLES_PER_PROMPT=16`，`ROLLOUT_BATCH_SIZE=8`，每批更新一次，`GLOBAL_BATCH_SIZE=128`。这是首轮实验起点；若 E2B 吞吐不足，可设 `ROLLOUT_BATCH_SIZE=4`，global batch 自动变为64。`micro-batch-size=1`，训练侧按每CP rank 8K token动态打包。降低 `MAX_TOKENS_PER_GPU` 不截断轨迹或改变global batch，但会增加microbatch数；超过上限的单条长轨迹仍会独占一个microbatch，padding也可能使实际局部长度略高于目标。
 
 `LOG_PROBS_CHUNK_SIZE` 默认1024，控制词表 logits 生成后的 logprob 计算分块。若这一步 CUDA OOM，可用 `LOG_PROBS_CHUNK_SIZE=128` 验证更低的临时显存峰值；它不缩小完整 logits 张量，不改变上下文长度、采样参数或 GRPO 组大小。

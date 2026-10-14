@@ -69,7 +69,8 @@ E2B_MODE=$(stat -c %a "$TERMINAL_RL_E2B_CONFIG_FILE")
 
 TOTAL_ACTOR_GPUS=$((ACTOR_NODES * ACTOR_GPUS_PER_NODE))
 (( TOTAL_ACTOR_GPUS % (TP_SIZE * PP_SIZE * CP_SIZE) == 0 )) || die "actor GPU 数不能被 TP×PP×CP 整除"
-(( TOTAL_ACTOR_GPUS >= TP_SIZE * EP_SIZE * PP_SIZE )) || die "actor GPU 数不足以容纳当前 EP"
+# Megatron的attention与expert分组独立；expert组使用ETP而不是attention TP。
+(( TOTAL_ACTOR_GPUS % (ETP_SIZE * EP_SIZE * PP_SIZE) == 0 )) || die "actor GPU 数不能被 ETP×EP×PP 整除"
 (( ROLLOUT_GPUS % ROLLOUT_TP_SIZE == 0 )) || die "rollout GPU 数不能被 rollout TP 整除"
 (( MAX_CONTEXT_LEN % CP_SIZE == 0 )) || die "MAX_CONTEXT_LEN 必须能被 CP_SIZE 整除"
 (( MAX_PROMPT_LEN < MAX_CONTEXT_LEN )) || die "MAX_PROMPT_LEN 必须小于 MAX_CONTEXT_LEN"

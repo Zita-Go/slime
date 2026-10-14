@@ -120,5 +120,30 @@ def test_pinned_original_reproduces_invalid_gate_view(original_source, tp):
             gate.contiguous().view(3, 1, (16 // tp) * 256)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tp", "pp", "cp", "ep", "etp", "valid"),
+    [(2, 1, 32, 32, 1, True), (8, 1, 8, 32, 1, True), (8, 2, 4, 16, 1, True), (8, 1, 16, 32, 1, False), (8, 1, 8, 32, 8, False)],
+)
+def test_terminal_launcher_matches_megatron_parallel_folding(tp, pp, cp, ep, etp, valid):
+    root = Path(os.environ.get("MEGATRON_ROOT", "/root/Megatron-LM"))
+    source = subprocess.check_output(["git", "-C", str(root), "show", f"{PIN}:megatron/core/parallel_state.py"], text=True)
+    tree = ast.parse(source)
+    nodes = [node for node in tree.body if getattr(node, "name", None) in {"RankGenerator", "generate_masked_orthogonal_rank_groups"}]
+    namespace = {"List": list}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "parallel_state.py", "exec"), namespace)
+    rank_generator = namespace["RankGenerator"]
+    if valid:
+        dense = rank_generator(tp=tp, ep=1, dp=64 // (tp * pp * cp), pp=pp, cp=cp, order="tp-cp-ep-dp-pp")
+        expert = rank_generator(tp=etp, ep=ep, dp=64 // (etp * ep * pp), pp=pp, cp=1, order="tp-cp-ep-dp-pp")
+        assert dense.world_size == expert.world_size == 64
+        assert dense.get_ranks("pp") == expert.get_ranks("pp")
+    script = (REPO_ROOT / "examples/terminal_agent_rl/run_nex_n25_mini.sh").read_text()
+    guards = script[script.index("TOTAL_ACTOR_GPUS=") : script.index('\nE2B_VENDOR_DIR="$E2B_VENDOR_DIR" HF_CHECKPOINT=')]
+    variables = f"ACTOR_NODES=8 ACTOR_GPUS_PER_NODE=8 TP_SIZE={tp} PP_SIZE={pp} CP_SIZE={cp} EP_SIZE={ep} ETP_SIZE={etp} ROLLOUT_GPUS=32 ROLLOUT_TP_SIZE=2 MAX_CONTEXT_LEN=262144 MAX_PROMPT_LEN=65536 GLOBAL_BATCH_SIZE=128 ROLLOUT_BATCH_SIZE=8 N_SAMPLES_PER_PROMPT=16"
+    result = subprocess.run(["bash", "-c", 'die() { echo "$*"; exit 2; };\n' + variables + "\n" + guards], capture_output=True, text=True)
+    assert (result.returncode == 0) == valid, result.stdout + result.stderr
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
