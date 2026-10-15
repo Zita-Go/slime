@@ -26,7 +26,33 @@ GPU训练使用 `RL/vendor/nextask-runtime-py313/bin/python` 运行bridge。该P
 
 Ray job入口使用Slime仓库的绝对`train.py`路径。driver默认继承Ray服务工作目录，提交客户端的`cd`不会改变driver工作目录；源码通过runtime env中的`PYTHONPATH`从共享仓库加载。
 
-正式训练默认每5个rollout保存一次checkpoint；短程或可抢占任务可显式设置`SAVE_INTERVAL=1`，使每次完成的参数更新都形成恢复点。保存成功仍需核验模型、optimizer和数据进度元数据，目录存在本身不代表可恢复。
+`TRAINING_PHASE=smoke` 默认三步、每步保存checkpoint；`TRAINING_PHASE=long`（默认）每5步存盘、每5步评测完整TB2.1。当前每个rollout只做一次优化，因此这里的step是参数更新而非microbatch。框架在末次rollout/epoch边界还可能额外保存恢复点；保存成功仍需核验模型、optimizer和数据进度元数据，目录存在本身不代表可恢复。
+
+## TensorBoard与TB2.1测试集评测
+
+默认开启TensorBoard（`USE_TENSORBOARD=1`），事件写入`$RUN_ROOT/tensorboard`，不依赖外网/W&B账号。`TENSORBOARD_DIR`会显式传入Ray worker，不是只设置在提交shell。可在能读取该共享目录的机器上查看：
+
+```bash
+tensorboard --logdir /绝对路径/RUN/tensorboard --host 127.0.0.1 --port 6006
+```
+
+默认评测配置为[tb21_eval.yaml](tb21_eval.yaml)：固定TB2.1全部89题、每题1次，直接使用其测试集，不从训练题库另外拆分验证集。指标`eval/tb21`是原生二元reward的89题均分；`train/loss`、`train/grad_norm`、rollout reward等由已有Slime日志接口记录。反复据测试集调参后的结果属于内部开发评测，不能当成完全未接触测试集的最终泛化成绩。
+
+TB2.1使用Harbor 0.21.0的Task/Trial/原生verifier和独立E2B环境，不调用NexTask pairwise verifier。Agent仍是训练的TerminalToolAgent/bash；仅工作目录按原生任务Dockerfile调整，原始测试不改。结果应标注`slime-terminal-bash` harness，不冒充其他官方Agent的leaderboard数字。tests/solution仅留在host task包中，由Harbor在正确阶段处理；模型prompt只有公开instruction。
+
+准备固定版本测试集（当前共享快照已准备，无需重复运行）：
+
+```bash
+PYTHONPATH=$PWD /gpfs/users/i-zhangguoqiang/terminal-code/Harbor-nexau/.venv/bin/python \
+  -m examples.terminal_agent_rl.tb21_dataset \
+  --output /gpfs/shared_data/zhangguoqiang/terminal-code/RL/datasets/tb21-7d7bdc1c
+```
+
+准备器只接受官方固定registry版本、完整89个task identity；输出已存在时拒绝覆盖。每次启动和评测重验manifest、task文件SHA与公开指令，不能静默截去长任务或漏题。运行时通过`TB21_RUNTIME_PYTHON`选择独立Harbor Python3.13，不污染Slime Python3.12/训练vendored SDK；E2B只使用既有保护配置和专用代理，密钥不进入Ray配置。默认`TB21_CONCURRENCY=8`。
+
+三步验证用`TRAINING_PHASE=smoke`，默认`SAVE_INTERVAL=1`；长程用`TRAINING_PHASE=long`，默认`SAVE_INTERVAL=5 EVAL_INTERVAL=5`。默认跳过训练前额外评测，周期评测在更新后的权重同步后进行。三步阶段不触发每5步的全量测试；可显式设`EVAL_INTERVAL=1`，但每步会额外完整跑89题。基础设施错误/缺失reward/沙箱清理失败会让该次评测报错，不冒充模型0分或缩小均分分母。每题原生result/verifier及清理回执在`$RUN_ROOT/tb21-eval/rollout-XXXXXX/`保留，失败轮次不覆盖。
+
+没有GPU模型的真实环境/verifier冒烟入口是`python -m examples.terminal_agent_rl.smoke_tb21 --prompt-data <tb21.jsonl> --output <新目录>`。它用固定空回答，只验链路，不能当成模型分数或全89题通过。`ENABLE_TB21_EVAL=0`和`USE_TENSORBOARD=0`仅供明确的隔离诊断，默认不关闭。设计与验收边界见[RFC](RFC-tb21-evaluation.md)。既有TP8资源覆盖仍应显式传入，不能把旧96卡脚本默认拓扑直接用于当前64卡集群。
 
 ## 导出训练集
 

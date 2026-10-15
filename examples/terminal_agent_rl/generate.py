@@ -22,17 +22,11 @@ from slime.utils.processing_utils import load_tokenizer
 from slime.utils.types import Sample
 
 from . import runtime
-from .agent import TerminalToolAgent
+from .agent import PROMPT_PREFIX, TerminalToolAgent
 from .sandbox import NextaskE2BSandbox
 
 logger = logging.getLogger(__name__)
 logging.getLogger("e2b").setLevel(logging.WARNING)
-
-PROMPT_PREFIX = """Work directly in the terminal environment rooted at /app and complete the task below.
-Make the required changes in the environment; do not merely describe a solution. Inspect the supplied files, run appropriate checks, and leave the final working state in place. Private tests and reference material are not available.
-
-TASK:
-"""
 
 
 @dataclass(frozen=True)

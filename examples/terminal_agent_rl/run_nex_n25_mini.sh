@@ -29,8 +29,20 @@ MAX_GEN_LEN=${MAX_GEN_LEN:-8192}
 ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-8}
 N_SAMPLES_PER_PROMPT=${N_SAMPLES_PER_PROMPT:-16}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-$((ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT))}
-NUM_ROLLOUT=${NUM_ROLLOUT:-100}
-SAVE_INTERVAL=${SAVE_INTERVAL:-5}
+TRAINING_PHASE=${TRAINING_PHASE:-long}
+case "$TRAINING_PHASE" in
+    smoke) DEFAULT_NUM_ROLLOUT=3; DEFAULT_SAVE_INTERVAL=1 ;;
+    long) DEFAULT_NUM_ROLLOUT=100; DEFAULT_SAVE_INTERVAL=5 ;;
+    *) echo "[ERROR] TRAINING_PHASE 必须为 smoke 或 long" >&2; exit 1 ;;
+esac
+NUM_ROLLOUT=${NUM_ROLLOUT:-$DEFAULT_NUM_ROLLOUT}
+SAVE_INTERVAL=${SAVE_INTERVAL:-$DEFAULT_SAVE_INTERVAL}
+EVAL_INTERVAL=${EVAL_INTERVAL:-5}
+ENABLE_TB21_EVAL=${ENABLE_TB21_EVAL:-1}
+EVAL_CONFIG=${EVAL_CONFIG:-$SCRIPT_DIR/tb21_eval.yaml}
+TB21_RUNTIME_PYTHON=${TB21_RUNTIME_PYTHON:-/gpfs/users/i-zhangguoqiang/terminal-code/Harbor-nexau/.venv/bin/python}
+TB21_CONCURRENCY=${TB21_CONCURRENCY:-8}
+USE_TENSORBOARD=${USE_TENSORBOARD:-1}
 SGLANG_SERVER_CONCURRENCY=${SGLANG_SERVER_CONCURRENCY:-4}
 LOG_PROBS_CHUNK_SIZE=${LOG_PROBS_CHUNK_SIZE:-1024}
 MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-8192}
@@ -45,6 +57,8 @@ EXP_TAG=${EXP_TAG:-nex-n25-mini-nextask-terminal-rl}
 STAMP=$(date -u +%Y%m%d-%H%M%S)
 RUN_ROOT=${RUN_ROOT:-$SLIME_DIR/runs/${EXP_TAG}_${STAMP}}
 SAVE_PATH=${SAVE_PATH:-$RUN_ROOT/checkpoints}
+export TENSORBOARD_DIR=${TENSORBOARD_DIR:-$RUN_ROOT/tensorboard}
+export TB21_EVAL_OUTPUT=${TB21_EVAL_OUTPUT:-$RUN_ROOT/tb21-eval}
 
 die() {
     echo "[ERROR] $*" >&2
@@ -53,6 +67,34 @@ die() {
 
 [[ "$LOG_PROBS_CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]] || die "LOG_PROBS_CHUNK_SIZE 必须是正整数"
 [[ "$MAX_TOKENS_PER_GPU" =~ ^[1-9][0-9]*$ ]] || die "MAX_TOKENS_PER_GPU 必须是正整数"
+[[ "$SAVE_INTERVAL" =~ ^[1-9][0-9]*$ ]] || die "SAVE_INTERVAL 必须是正整数"
+[[ "$EVAL_INTERVAL" =~ ^[1-9][0-9]*$ ]] || die "EVAL_INTERVAL 必须是正整数"
+[[ "$TB21_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || die "TB21_CONCURRENCY 必须是正整数"
+[[ "$USE_TENSORBOARD" =~ ^[01]$ && "$ENABLE_TB21_EVAL" =~ ^[01]$ ]] || die "监测/评测开关必须是0或1"
+
+TRACKING_ARGS=()
+if [[ "$USE_TENSORBOARD" == 1 ]]; then
+    python3 -c 'from torch.utils.tensorboard import SummaryWriter' || die "镜像缺少TensorBoard依赖"
+    TRACKING_ARGS+=(--use-tensorboard --tb-project-name terminal-agent-rl --tb-experiment-name "$EXP_TAG")
+fi
+EVAL_ARGS=()
+if [[ "$ENABLE_TB21_EVAL" == 1 ]]; then
+    [[ -x "$TB21_RUNTIME_PYTHON" ]] || die "TB2.1 Harbor Python不可执行"
+    PYTHONPATH="$SLIME_DIR" "$TB21_RUNTIME_PYTHON" -c \
+        'import importlib.metadata as m; from examples.terminal_agent_rl.tb21_harbor import SlimeTerminalAgent, AuditedE2BEnvironment; assert m.version("harbor") == "0.21.0"'
+    PYTHONPATH="$SLIME_DIR" python3 - "$EVAL_CONFIG" <<'PY'
+import sys
+from pathlib import Path
+from omegaconf import OmegaConf
+from examples.terminal_agent_rl.tb21_dataset import validate_dataset
+config = OmegaConf.to_container(OmegaConf.load(sys.argv[1]), resolve=True)["eval"]
+assert len(config["datasets"]) == 1 and config["datasets"][0]["name"] == "tb21"
+validate_dataset(Path(config["datasets"][0]["path"]))
+print("[OK] pinned full TB2.1 eval dataset, 89 tasks")
+PY
+    EVAL_ARGS+=(--eval-config "$EVAL_CONFIG" --eval-interval "$EVAL_INTERVAL" --skip-eval-before-train
+        --eval-function-path examples.terminal_agent_rl.tb21_eval.evaluate --n-samples-per-eval-prompt 1)
+fi
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || die "HF checkpoint 不完整: $HF_CHECKPOINT"
 [[ -f "$HF_CHECKPOINT/chat_template.jinja" ]] || die "缺少 chat template: $HF_CHECKPOINT/chat_template.jinja"
@@ -204,6 +246,7 @@ export TERMINAL_RL_MAX_TURNS=${TERMINAL_RL_MAX_TURNS:-100}
 export TERMINAL_RL_REASONING_EFFORT=${TERMINAL_RL_REASONING_EFFORT:-medium}
 export ADAPTER_BIND_HOST=127.0.0.1
 export ADAPTER_PORT=0
+export TB21_RUNTIME_PYTHON TB21_CONCURRENCY
 
 export MASTER_ADDR=${MASTER_ADDR:?NorthJob 未设置 MASTER_ADDR}
 export MASTER_PORT=${MASTER_PORT:-6379}
@@ -229,6 +272,10 @@ keys = (
     "TERMINAL_RL_BOOT_CONCURRENCY",
     "TERMINAL_RL_MAX_TURNS",
     "TERMINAL_RL_REASONING_EFFORT",
+    "TENSORBOARD_DIR",
+    "TB21_RUNTIME_PYTHON",
+    "TB21_CONCURRENCY",
+    "TB21_EVAL_OUTPUT",
     "ADAPTER_BIND_HOST",
     "ADAPTER_PORT",
     "MASTER_ADDR",
@@ -265,5 +312,7 @@ ray job submit --address=http://127.0.0.1:8265 \
     "${GRPO_ARGS[@]}" \
     "${PERF_ARGS[@]}" \
     "${SGLANG_ARGS[@]}" \
+    "${TRACKING_ARGS[@]}" \
+    "${EVAL_ARGS[@]}" \
     "${MISC_ARGS[@]}" \
     2>&1 | tee "$RUN_ROOT/run.log"

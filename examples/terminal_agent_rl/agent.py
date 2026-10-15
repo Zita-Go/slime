@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
+import shlex
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +17,12 @@ import aiohttp
 from slime.agent.sandbox import Sandbox
 
 logger = logging.getLogger(__name__)
+
+PROMPT_PREFIX = """Work directly in the terminal environment rooted at /app and complete the task below.
+Make the required changes in the environment; do not merely describe a solution. Inspect the supplied files, run appropriate checks, and leave the final working state in place. Private tests and reference material are not available.
+
+TASK:
+"""
 
 SYSTEM_PROMPT = """You are an autonomous terminal agent in an isolated task environment.
 Use the bash tool to inspect and modify the environment until the user's task is actually complete. Work primarily in /app, but you may modify system paths or services when the task requires it. Run relevant checks before finishing. Do not merely explain commands: execute them. Private tests and reference solutions are unavailable, so solve from the visible task and workspace only. When the task is complete, respond with a concise final summary and make no further tool calls."""
@@ -77,7 +85,13 @@ def _arguments(call: dict[str, Any]) -> dict[str, Any]:
 
 
 class TerminalToolAgent:
-    def __init__(self) -> None:
+    def __init__(self, *, workdir: str = "/app") -> None:
+        if not workdir.startswith("/"):
+            raise ValueError("Agent workdir must be absolute")
+        self.workdir = workdir
+        self.system_prompt = SYSTEM_PROMPT.replace("/app", workdir)
+        self.bash_tool = copy.deepcopy(BASH_TOOL)
+        self.bash_tool["function"]["parameters"]["properties"]["command"]["description"] = f"The shell command to execute. Each call starts in {workdir}. Use non-interactive commands."
         self.max_turns = int(os.environ.get("TERMINAL_RL_MAX_TURNS", "100"))
         self.default_command_timeout = int(os.environ.get("TERMINAL_RL_COMMAND_TIMEOUT_SEC", "120"))
         self.max_tool_output_bytes = int(os.environ.get("TERMINAL_RL_MAX_TOOL_OUTPUT_BYTES", "32768"))
@@ -103,7 +117,7 @@ class TerminalToolAgent:
             timeout = self.default_command_timeout
         try:
             exit_code, stdout, stderr = await sandbox.exec(
-                f"cd /app\n{command}",
+                f"cd {shlex.quote(self.workdir)}\n{command}",
                 user="root",
                 timeout=timeout,
                 check=False,
@@ -131,7 +145,7 @@ class TerminalToolAgent:
         prompt: str,
     ) -> AgentResult:
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": prompt},
         ]
         deadline = time.monotonic() + time_budget_sec
@@ -143,17 +157,20 @@ class TerminalToolAgent:
                 body = {
                     "model": "slime-actor",
                     "messages": messages,
-                    "tools": [BASH_TOOL],
+                    "tools": [self.bash_tool],
                     "tool_choice": "auto",
                     "parallel_tool_calls": False,
                     "reasoning_effort": self.reasoning_effort,
                 }
                 try:
-                    async with asyncio.timeout(remaining), client.post(
-                        f"{adapter_url}/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {session_id}"},
-                        json=body,
-                    ) as response:
+                    async with (
+                        asyncio.timeout(remaining),
+                        client.post(
+                            f"{adapter_url}/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {session_id}"},
+                            json=body,
+                        ) as response,
+                    ):
                         raw = await response.text()
                         if response.status >= 400:
                             raise RuntimeError(f"adapter returned HTTP {response.status}: {raw[:500]}")
