@@ -65,6 +65,7 @@ def main():
         for sp in [False, True]:
             model_parallel_cuda_manual_seed(123)
             config = TransformerConfig(
+                tensor_model_parallel_size=args.tp_size,
                 num_layers=1,
                 hidden_size=2048,
                 num_attention_heads=16,
