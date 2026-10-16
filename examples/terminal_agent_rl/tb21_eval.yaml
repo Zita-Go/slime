@@ -1,10 +1,10 @@
 eval:
   defaults:
     n_samples_per_eval_prompt: 1
-    temperature: 0.7
+    temperature: 1.0
     top_p: 0.95
-    top_k: 40
-    max_response_len: 8192
+    top_k: 20
+    max_response_len: 65536
     stop_token_ids: [248046, 248044]
     input_key: prompt
     label_key: label

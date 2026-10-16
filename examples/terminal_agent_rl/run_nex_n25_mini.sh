@@ -176,7 +176,7 @@ ROLLOUT_ARGS=(
     --rollout-max-prompt-len "$MAX_PROMPT_LEN"
     --rollout-max-context-len "$MAX_CONTEXT_LEN"
     --rollout-max-response-len "$MAX_GEN_LEN"
-    --rollout-temperature 0.7
+    --rollout-temperature 1.0
     --rollout-top-p 0.95
     --rollout-top-k 40
     --rollout-stop-token-ids 248046 248044
@@ -268,6 +268,10 @@ export TB21_TRIAL_TIMEOUT_SEC=${TB21_TRIAL_TIMEOUT_SEC:-$((TB21_AGENT_TIME_BUDGE
     echo "TB21_TRIAL_TIMEOUT_SEC必须大于TB21 Agent预算加60秒" >&2
     exit 2
 }
+export TB21_MAX_TURNS=${TB21_MAX_TURNS:-100000}
+[[ "$TB21_MAX_TURNS" =~ ^[1-9][0-9]*$ ]] || { echo "TB21_MAX_TURNS必须为正整数" >&2; exit 2; }
+export TB21_REASONING_EFFORT=${TB21_REASONING_EFFORT:-high}
+[[ "$TB21_REASONING_EFFORT" == high ]] || { echo "TB21_REASONING_EFFORT必须为high" >&2; exit 2; }
 export ADAPTER_BIND_HOST=127.0.0.1
 export ADAPTER_PORT=0
 export TB21_RUNTIME_PYTHON TB21_CONCURRENCY
@@ -301,6 +305,8 @@ keys = (
     "TB21_CONCURRENCY",
     "TB21_AGENT_TIME_BUDGET_SEC",
     "TB21_TRIAL_TIMEOUT_SEC",
+    "TB21_MAX_TURNS",
+    "TB21_REASONING_EFFORT",
     "TB21_EVAL_OUTPUT",
     "TB21_EVAL_QUEUE",
     "ADAPTER_BIND_HOST",

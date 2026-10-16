@@ -14,7 +14,7 @@ from harbor.agents.base import BaseAgent
 from nexau_harbor.e2b_environment import NexAUE2BEnvironment
 
 from .agent import PROMPT_PREFIX, TerminalToolAgent
-from .tb21_timeouts import agent_time_budget_sec, harbor_agent_timeout_sec
+from .tb21_timeouts import agent_time_budget_sec, harbor_agent_timeout_sec, max_turns, reasoning_effort
 
 
 class SlimeTerminalAgent(BaseAgent):
@@ -112,6 +112,9 @@ async def run_trial(options) -> None:
     configure_bridge_network()
     os.environ["TB21_ADAPTER_URL"] = options.adapter_url
     os.environ["TB21_ADAPTER_SESSION"] = options.session_id
+    # TB2.1对齐step90评测语义，不继承训练侧400轮的优化吞吐保护。
+    os.environ["TERMINAL_RL_MAX_TURNS"] = str(max_turns())
+    os.environ["TERMINAL_RL_REASONING_EFFORT"] = reasoning_effort()
     budget = agent_time_budget_sec()
     config = TrialConfig(
         task=TaskConfig(path=options.task_dir),

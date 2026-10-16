@@ -7,6 +7,8 @@
 - 使用Harbor 0.21.0原生Task/Trial/verifier与既有E2B环境适配，绝不调用NexTask pairwise verifier，也不把solution/tests加入模型prompt。
 - 复用训练的TerminalToolAgent、bash工具、系统提示和上下文机制，只把公开任务指令替换为TB2.1 instruction；评测预算单独配置。这是TB2.1任务上的本项目harness分数，不冒充官方其他Agent的leaderboard结果。
 - TB2.1单题做题预算独立于RL采样，默认 `TB21_AGENT_TIME_BUDGET_SEC=21600`（6小时）；Harbor看门狗额外保留60秒收尾。整题墙钟默认32400秒，覆盖E2B创建、Agent、原生verifier及清理，且必须严格大于Agent看门狗。
+- 采样对齐step90评测为temperature1.0/top_p0.95/top_k20、单轮65536 token及high reasoning。`TB21_MAX_TURNS=100000`只作为失控保护，正常终止由6小时时间预算决定；NexAU E2B keepalive默认最长24小时。
+- 当前TerminalToolAgent尚无Claude Code在196608 token触发的语义摘要压缩。训练轨迹prefix merging只减少训练表示重复，不会缩短下一轮推理prompt；在真正实现并验收摘要闭包前，不能宣称上下文管理与step90完全对齐，也不使用任意丢弃旧消息或“保留最近5轮”冒充压缩。
 
 ## 接入方式
 

@@ -140,9 +140,9 @@ def test_eval_config_has_one_attempt_no_train_hook():
     assert len(configs) == 1
     config = configs[0]
     assert config.name == "tb21" and config.n_samples_per_eval_prompt == 1
-    assert (config.temperature, config.top_p, config.top_k) == (0.7, 0.95, 40)
+    assert (config.temperature, config.top_p, config.top_k) == (1.0, 0.95, 20)
     assert config.custom_generate_function_path is None
-    assert config.max_response_len == 8192
+    assert config.max_response_len == 65536
 
 
 @pytest.mark.parametrize("top_p,expected", [(0.95, {"return_top_p_token_ids": True}), (1.0, None)])
@@ -191,9 +191,13 @@ def test_eval_hook_cannot_be_used_for_training():
 def test_tb21_timeout_defaults_are_six_hour_agent_and_nine_hour_trial(monkeypatch):
     monkeypatch.delenv("TB21_AGENT_TIME_BUDGET_SEC", raising=False)
     monkeypatch.delenv("TB21_TRIAL_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("TB21_MAX_TURNS", raising=False)
+    monkeypatch.delenv("TB21_REASONING_EFFORT", raising=False)
     assert tb21_timeouts.agent_time_budget_sec() == 21600
     assert tb21_timeouts.harbor_agent_timeout_sec() == 21660
     assert tb21_timeouts.trial_timeout_sec() == 32400
+    assert tb21_timeouts.max_turns() == 100000
+    assert tb21_timeouts.reasoning_effort() == "high"
 
 
 def test_tb21_timeout_override_must_leave_room_for_harbor_cleanup(monkeypatch):
@@ -203,6 +207,15 @@ def test_tb21_timeout_override_must_leave_room_for_harbor_cleanup(monkeypatch):
         tb21_timeouts.trial_timeout_sec()
     monkeypatch.setenv("TB21_TRIAL_TIMEOUT_SEC", "160")
     assert tb21_timeouts.trial_timeout_sec() == 160
+
+
+def test_tb21_agent_settings_reject_low_or_unsupported_overrides(monkeypatch):
+    monkeypatch.setenv("TB21_MAX_TURNS", "0")
+    with pytest.raises(ValueError, match="positive integer"):
+        tb21_timeouts.max_turns()
+    monkeypatch.setenv("TB21_REASONING_EFFORT", "medium")
+    with pytest.raises(ValueError, match="must be high"):
+        tb21_timeouts.reasoning_effort()
 
 
 def test_epoch_boundary_does_not_trigger_extra_tb21_run():
@@ -343,6 +356,8 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         "TERMINAL_RL_AGENT_TIME_BUDGET_SEC",
         "TERMINAL_RL_MAX_TURNS",
         "TERMINAL_RL_REASONING_EFFORT",
+        "TB21_MAX_TURNS",
+        "TB21_REASONING_EFFORT",
     ):
         env.pop(variable, None)
     env.update(SGLANG_SERVER_CONCURRENCY="8" if variant == "rollout8" else "4", MAX_TOKENS_PER_GPU="16384" if variant == "pack16k" else "8192", MOE_DISPATCHER="deepep" if variant == "deepep" else "alltoall")
@@ -369,7 +384,12 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TERMINAL_RL_REASONING_EFFORT"] == "high"
     assert runtime["env_vars"]["TB21_AGENT_TIME_BUDGET_SEC"] == "21600"
     assert runtime["env_vars"]["TB21_TRIAL_TIMEOUT_SEC"] == "32400"
+    assert runtime["env_vars"]["TB21_MAX_TURNS"] == "100000"
+    assert runtime["env_vars"]["TB21_REASONING_EFFORT"] == "high"
     assert argv[argv.index("--rollout-max-response-len") + 1] == "32768"
+    assert argv[argv.index("--rollout-temperature") + 1] == "1.0"
+    assert argv[argv.index("--rollout-top-p") + 1] == "0.95"
+    assert argv[argv.index("--rollout-top-k") + 1] == "40"
     assert argv[argv.index("--sglang-server-concurrency") + 1] == env["SGLANG_SERVER_CONCURRENCY"]
     assert argv[argv.index("--max-tokens-per-gpu") + 1] == env["MAX_TOKENS_PER_GPU"]
     dispatchers = [argv[i + 1] for i, value in enumerate(argv) if value == "--moe-token-dispatcher-type"]
