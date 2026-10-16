@@ -42,10 +42,13 @@ ENABLE_TB21_EVAL=${ENABLE_TB21_EVAL:-1}
 EVAL_CONFIG=${EVAL_CONFIG:-$SCRIPT_DIR/tb21_eval.yaml}
 TB21_RUNTIME_PYTHON=${TB21_RUNTIME_PYTHON:-/gpfs/users/i-zhangguoqiang/terminal-code/Harbor-nexau/.venv/bin/python}
 TB21_CONCURRENCY=${TB21_CONCURRENCY:-8}
+TB21_EVAL_MODE=${TB21_EVAL_MODE:-async}
+export TB21_EVAL_QUEUE=${TB21_EVAL_QUEUE:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/tb21-eval-queue}
 USE_TENSORBOARD=${USE_TENSORBOARD:-1}
 SGLANG_SERVER_CONCURRENCY=${SGLANG_SERVER_CONCURRENCY:-4}
 LOG_PROBS_CHUNK_SIZE=${LOG_PROBS_CHUNK_SIZE:-1024}
 MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-8192}
+MOE_DISPATCHER=${MOE_DISPATCHER:-alltoall}
 
 TP_SIZE=${TP_SIZE:-2}
 PP_SIZE=${PP_SIZE:-1}
@@ -71,6 +74,8 @@ die() {
 [[ "$EVAL_INTERVAL" =~ ^[1-9][0-9]*$ ]] || die "EVAL_INTERVAL 必须是正整数"
 [[ "$TB21_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || die "TB21_CONCURRENCY 必须是正整数"
 [[ "$USE_TENSORBOARD" =~ ^[01]$ && "$ENABLE_TB21_EVAL" =~ ^[01]$ ]] || die "监测/评测开关必须是0或1"
+[[ "$TB21_EVAL_MODE" == async || "$TB21_EVAL_MODE" == sync ]] || die "TB21_EVAL_MODE 必须为async/sync"
+[[ "$MOE_DISPATCHER" == alltoall || "$MOE_DISPATCHER" == deepep ]] || die "MOE_DISPATCHER 必须为alltoall/deepep"
 
 TRACKING_ARGS=()
 if [[ "$USE_TENSORBOARD" == 1 ]]; then
@@ -79,6 +84,12 @@ if [[ "$USE_TENSORBOARD" == 1 ]]; then
 fi
 EVAL_ARGS=()
 if [[ "$ENABLE_TB21_EVAL" == 1 ]]; then
+    if [[ "$TB21_EVAL_MODE" == async ]]; then
+        (( EVAL_INTERVAL % SAVE_INTERVAL == 0 )) || die "后台评测要求SAVE_INTERVAL整除EVAL_INTERVAL，确保目标checkpoint存在"
+        EVAL_FUNCTION=examples.terminal_agent_rl.tb21_queue.enqueue
+    else
+        EVAL_FUNCTION=examples.terminal_agent_rl.tb21_eval.evaluate
+    fi
     [[ -x "$TB21_RUNTIME_PYTHON" ]] || die "TB2.1 Harbor Python不可执行"
     PYTHONPATH="$SLIME_DIR" "$TB21_RUNTIME_PYTHON" -c \
         'import importlib.metadata as m; from examples.terminal_agent_rl.tb21_harbor import SlimeTerminalAgent, AuditedE2BEnvironment; assert m.version("harbor") == "0.21.0"'
@@ -93,7 +104,7 @@ validate_dataset(Path(config["datasets"][0]["path"]))
 print("[OK] pinned full TB2.1 eval dataset, 89 tasks")
 PY
     EVAL_ARGS+=(--eval-config "$EVAL_CONFIG" --eval-interval "$EVAL_INTERVAL" --skip-eval-before-train
-        --eval-function-path examples.terminal_agent_rl.tb21_eval.evaluate --n-samples-per-eval-prompt 1)
+        --eval-function-path "$EVAL_FUNCTION" --n-samples-per-eval-prompt 1)
 fi
 
 [[ -f "$HF_CHECKPOINT/model.safetensors.index.json" ]] || die "HF checkpoint 不完整: $HF_CHECKPOINT"
@@ -235,6 +246,10 @@ MISC_ARGS=(
     --attention-backend flash
     --moe-token-dispatcher-type alltoall
 )
+if [[ "$MOE_DISPATCHER" == deepep ]]; then
+    # 模型脚本中已有alltoall；最后一个同名参数由argparse覆盖，不同时启用两种dispatcher。
+    MISC_ARGS+=(--moe-token-dispatcher-type flex --moe-flex-dispatcher-backend deepep --moe-enable-deepep)
+fi
 
 export NEXTASK_RUNTIME_ROOT NEXTASK_RUNTIME_PYTHON TERMINAL_RL_E2B_CONFIG_FILE E2B_VENDOR_DIR
 export TERMINAL_RL_E2B_PROXY
@@ -277,6 +292,7 @@ keys = (
     "TB21_RUNTIME_PYTHON",
     "TB21_CONCURRENCY",
     "TB21_EVAL_OUTPUT",
+    "TB21_EVAL_QUEUE",
     "ADAPTER_BIND_HOST",
     "ADAPTER_PORT",
     "MASTER_ADDR",

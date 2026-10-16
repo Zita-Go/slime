@@ -73,24 +73,28 @@ async def _trial(row, config, output, state):
         await state.adapter.drop_session(session_id, wait_timeout=30)
 
 
-async def _evaluate(args, rollout_id, config):
-    from .generate import _AdapterService
-
+async def _evaluate(args, rollout_id, config, *, states=None):
     rows = validate_dataset(Path(config.path))
     concurrency = int(os.environ.get("TB21_CONCURRENCY", "8"))
     if concurrency <= 0:
         raise ValueError("TB21_CONCURRENCY must be positive")
-    state = _AdapterService(args)
+    if states is None:
+        from .generate import _AdapterService
+
+        states = [_AdapterService(args)]
+    if not states or concurrency % len(states):
+        raise ValueError("trial concurrency must be divisible by the number of independent engines")
     output = Path(os.environ["TB21_EVAL_OUTPUT"]) / f"rollout-{rollout_id:06d}"
     # 失败轮次不能被重跑覆盖；恢复时显式选择新的RUN_ROOT。
     output.mkdir(parents=True, exist_ok=False)
-    semaphore = asyncio.Semaphore(concurrency)
+    semaphores = [asyncio.Semaphore(concurrency // len(states)) for _ in states]
 
-    async def one(row):
-        async with semaphore:
-            return await _trial(row, config, output / row["label"], state)
+    async def one(index, row):
+        engine = index % len(states)
+        async with semaphores[engine]:
+            return await _trial(row, config, output / row["label"], states[engine])
 
-    results = await asyncio.gather(*(one(row) for row in rows), return_exceptions=True)
+    results = await asyncio.gather(*(one(index, row) for index, row in enumerate(rows)), return_exceptions=True)
     failures = [row["label"] for row, value in zip(rows, results, strict=True) if isinstance(value, BaseException)]
     (output / "summary.json").write_text(
         json.dumps(

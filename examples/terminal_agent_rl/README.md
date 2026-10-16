@@ -42,6 +42,20 @@ tensorboard --logdir /绝对路径/RUN/tensorboard --host 127.0.0.1 --port 6006
 
 TB2.1使用Harbor 0.21.0的Task/Trial/原生verifier和独立E2B环境，不调用NexTask pairwise verifier。Agent仍是训练的TerminalToolAgent/bash；仅工作目录按原生任务Dockerfile调整，原始测试不改。结果应标注`slime-terminal-bash` harness，不冒充其他官方Agent的leaderboard数字。tests/solution仅留在host task包中，由Harbor在正确阶段处理；模型prompt只有公开instruction。
 
+默认`TB21_EVAL_MODE=async`：每5更新仅提交固定checkpoint请求，不等待89题完成。`TB21_EVAL_QUEUE`默认指向共享盘`RL/tb21-eval-queue`。额外单机8H100运行4个TP2实例，每实例5题，总并发20；worker不加入训练Ray，不连接训练推理服务。独立Pod使用与训练相同的保护E2B配置及专用代理、Harbor Python：
+
+```bash
+EVAL_EXPECTED_POD=<已核验的独立评测Pod全名> bash examples/terminal_agent_rl/run_tb21_worker.sh
+```
+
+worker须通过Pod本地monitor托管，启动前核验精确Job/8GPU/数据与E2B链路。等待队列不等于推理服务已部署：真实导出/加载/89题结果分别保存在`jobs/*/evaluation/{hf-snapshot,sglang-*.log,inference-ready.json,trials}`。仅`status=completed`且89题/清理全部确认才有分数；失败不是0分，保留日志并且不终止训练。worker中断后的running任务必须人工核验，不覆盖重跑。每步结果按来源optimizer step写入`$TENSORBOARD_DIR/tb21-background`，不按完成时的最新训练step归属。
+
+checkpoint请求是pin，所有尚未完成的评测来源都不能被清理。本实现不删除任何RL checkpoint或HF快照；容量不足需处理后再继续。`SAVE_INTERVAL`须整除`EVAL_INTERVAL`。如显式选择`TB21_EVAL_MODE=sync`，才沿用原来等待当前同步权重评测的方式。当前已启动的三步进程不会自动更换hook；其全局终点step4本来不触发每5步评测。
+
+提速参数保持分开测试：`SGLANG_SERVER_CONCURRENCY=8`（原4）、`MAX_TOKENS_PER_GPU=16384`（原8192）、`MOE_DISPATCHER=deepep`（原alltoall，对应flex/backend deepep）。默认值不变；必须先验收当前恢复任务与有效checkpoint、无其他活跃训练，再以独立RUN逐项试验，不修改n16/global128/FP32/context/Agent预算。比较完整更新耗时及显存，不用采样等待期的低显存推断反向安全。
+
+`run_performance_trial.sh rollout8|pack16k|deepep`强制每候选只从同一验收来源新增一次更新、save1、独立RUN，诊断试验不触发TB2.1以免污染耗时对比；正式长程仍save5/eval5。必须显式传入`LOAD_PATH/PROMPT_DATA/RUN_ROOT/PERF_ACCEPTANCE_RECEIPT`，后者必须包含`ok=true`、`additional_optimizer_updates_verified>=3`、与LOAD_PATH相同的`checkpoint_root`，不能用排队/单个目录存在代替验收。脚本拒绝活跃Ray提交、空闲GPU不足64或存储不足，不申请卡、不重启Ray。每项仅改变自身参数，结果未验收前不自动设为长程默认。
+
 准备固定版本测试集（当前共享快照已准备，无需重复运行）：
 
 ```bash

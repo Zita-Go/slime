@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import signal
 import subprocess
 import sys
 import types
@@ -20,7 +21,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from examples.terminal_agent_rl import tb21_dataset, tb21_eval  # noqa: E402
+from examples.terminal_agent_rl import tb21_dataset, tb21_eval, tb21_queue, tb21_worker  # noqa: E402
 from examples.terminal_agent_rl.agent import BASH_TOOL, SYSTEM_PROMPT, TerminalToolAgent  # noqa: E402
 from slime.utils.eval_config import build_eval_dataset_configs  # noqa: E402
 from slime.utils.misc import should_run_periodic_action  # noqa: E402
@@ -229,7 +230,8 @@ def test_tensorboard_native_log_roundtrip(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("phase,save,num", [("smoke", "1", "3"), ("long", "5", "100")])
 @pytest.mark.parametrize("resume", [False, True])
-def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, num, resume):
+@pytest.mark.parametrize("variant", ["baseline", "rollout8", "pack16k", "deepep"])
+def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, num, resume, variant):
     executable = sys.executable
     mockbin = tmp_path / "bin"
     mockbin.mkdir()
@@ -273,8 +275,9 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         RUN_ROOT=str(tmp_path / "run"),
         LOAD_PATH=str(ref) if resume else "",
     )
-    for variable in ("SAVE_INTERVAL", "NUM_ROLLOUT", "EVAL_INTERVAL", "USE_TENSORBOARD", "ENABLE_TB21_EVAL", "TENSORBOARD_DIR"):
+    for variable in ("SAVE_INTERVAL", "NUM_ROLLOUT", "EVAL_INTERVAL", "USE_TENSORBOARD", "ENABLE_TB21_EVAL", "TENSORBOARD_DIR", "TB21_EVAL_MODE", "MOE_DISPATCHER"):
         env.pop(variable, None)
+    env.update(SGLANG_SERVER_CONCURRENCY="8" if variant == "rollout8" else "4", MAX_TOKENS_PER_GPU="16384" if variant == "pack16k" else "8192", MOE_DISPATCHER="deepep" if variant == "deepep" else "alltoall")
     result = subprocess.run(["bash", str(ROOT / "examples/terminal_agent_rl/run_nex_n25_mini.sh")], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     argv = json.loads(result.stdout.splitlines()[-1])
@@ -288,10 +291,220 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert ("--load" in argv) is resume
     assert ("--use-checkpoint-opt-param-scheduler" in argv) is resume
     assert not {"--finetune", "--no-load-optim", "--no-load-rng", "--override-opt-param-scheduler"} & set(argv)
-    assert argv[argv.index("--eval-function-path") + 1] == "examples.terminal_agent_rl.tb21_eval.evaluate"
+    assert argv[argv.index("--eval-function-path") + 1] == "examples.terminal_agent_rl.tb21_queue.enqueue"
     runtime = json.loads(next(a.split("=", 1)[1] for a in argv if a.startswith("--runtime-env-json=")))
     assert runtime["env_vars"]["TENSORBOARD_DIR"] == str(tmp_path / "run/tensorboard")
     assert runtime["env_vars"]["TB21_EVAL_OUTPUT"] == str(tmp_path / "run/tb21-eval")
+    assert "TB21_EVAL_QUEUE" in runtime["env_vars"]
+    assert argv[argv.index("--sglang-server-concurrency") + 1] == env["SGLANG_SERVER_CONCURRENCY"]
+    assert argv[argv.index("--max-tokens-per-gpu") + 1] == env["MAX_TOKENS_PER_GPU"]
+    dispatchers = [argv[i + 1] for i, value in enumerate(argv) if value == "--moe-token-dispatcher-type"]
+    assert dispatchers[-1] == ("flex" if variant == "deepep" else "alltoall")
+    assert ("--moe-enable-deepep" in argv) is (variant == "deepep")
+    if variant == "deepep":
+        assert argv[argv.index("--moe-flex-dispatcher-backend") + 1] == "deepep"
+
+
+@pytest.mark.parametrize("name,value,reason", [("MOE_DISPATCHER", "typo", "MOE_DISPATCHER"), ("TB21_EVAL_MODE", "typo", "TB21_EVAL_MODE"), ("SAVE_INTERVAL", "3", "整除")])
+def test_background_and_performance_shell_reject_invalid_options(name, value, reason):
+    env = dict(os.environ, USE_TENSORBOARD="0", ENABLE_TB21_EVAL="1", TB21_EVAL_MODE="async", EVAL_INTERVAL="5", SAVE_INTERVAL="5", MOE_DISPATCHER="alltoall")
+    env[name] = value
+    result = subprocess.run(["bash", str(ROOT / "examples/terminal_agent_rl/run_nex_n25_mini.sh")], env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and reason in result.stderr
+
+
+@pytest.fixture
+def queue_args(dataset, tmp_path, monkeypatch):
+    from slime.utils.eval_config import EvalDatasetConfig
+
+    monkeypatch.setenv("TB21_EVAL_QUEUE", str(tmp_path / "queue"))
+    monkeypatch.setenv("TENSORBOARD_DIR", str(tmp_path / "tensorboard"))
+    return SimpleNamespace(
+        save=str(tmp_path / "checkpoints"),
+        hf_checkpoint=str(tmp_path / "base"),
+        rollout_max_context_len=262144,
+        sglang_tool_call_parser="qwen3_coder",
+        sglang_reasoning_parser="qwen3",
+        eval_interval=5,
+        eval_datasets=[EvalDatasetConfig(name="tb21", path=str(dataset), n_samples_per_eval_prompt=1)],
+    )
+
+
+def test_background_hook_only_enqueues_fixed_checkpoint_and_deduplicates(queue_args, tmp_path):
+    args = queue_args
+    assert tb21_queue.enqueue(args, 2, None, evaluation=True).data == {}
+    for _ in range(2):
+        result = tb21_queue.enqueue(args, 4, None, evaluation=True)
+        assert result.data == {} and result.metrics["eval/tb21/queued"] == 1
+    requests = list((tmp_path / "queue/requests").glob("*.json"))
+    assert len(requests) == 1
+    payload = json.loads(requests[0].read_text())
+    assert payload["checkpoint_dir"] == str(tmp_path / "checkpoints/iter_0000004")
+    assert payload["optimizer_step"] == 5 and "sglang_router_ip" not in payload
+    assert not (tmp_path / "checkpoints").exists()
+    tb21_queue.validate_request(payload)
+
+
+def test_background_enqueue_io_failure_does_not_fail_training_or_emit_score(queue_args, monkeypatch):
+    def fail(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tb21_queue, "atomic_json", fail)
+    result = tb21_queue.enqueue(queue_args, 4, None, evaluation=True)
+    assert result.metrics == {"eval/tb21/queued": 0, "eval/tb21/enqueue_failed": 1}
+    assert result.data == {}
+    with pytest.raises(ValueError, match="eval-only"):
+        tb21_queue.enqueue(queue_args, 4, None, evaluation=False)
+
+
+def test_background_request_immutability_and_dataset_drift(queue_args, tmp_path, monkeypatch):
+    tb21_queue.enqueue(queue_args, 4, None, evaluation=True)
+    monkeypatch.setenv("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "99")
+    result = tb21_queue.enqueue(queue_args, 4, None, evaluation=True)
+    assert result.metrics["eval/tb21/enqueue_failed"] == 1
+    path = next((tmp_path / "queue/requests").glob("*.json"))
+    request = json.loads(path.read_text())
+    Path(queue_args.eval_datasets[0].path).write_text("changed")
+    with pytest.raises(ValueError, match="changed"):
+        tb21_queue.validate_request(request)
+
+
+def test_background_checkpoint_waits_for_published_exact_iteration(queue_args, tmp_path):
+    request = tb21_queue.build_request(queue_args, 4, queue_args.eval_datasets[0])
+    directory = Path(request["checkpoint_dir"])
+    directory.mkdir(parents=True)
+    for name in (".metadata", "common.pt", "__0_0.distcp"):
+        (directory / name).touch()
+    assert not tb21_queue.checkpoint_published(request)
+    tracker = directory.parent / "latest_checkpointed_iteration.txt"
+    tracker.write_text("3")
+    assert not tb21_queue.checkpoint_published(request)
+    tracker.write_text("9")
+    assert tb21_queue.checkpoint_published(request)  # 只取固定iter4，不跟随latest变成iter9。
+    request["checkpoint_dir"] = str(directory.parent / "iter_0000009")
+    with pytest.raises(ValueError, match="exact"):
+        tb21_queue.checkpoint_published(request)
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_background_worker_is_once_per_request_and_failure_is_not_score(queue_args, tmp_path, monkeypatch, failed):
+    tb21_queue.enqueue(queue_args, 4, None, evaluation=True)
+    monkeypatch.setattr(tb21_worker, "checkpoint_published", lambda request: True)
+    called, recorded = [], []
+
+    def evaluate(request, output):
+        called.append(request["optimizer_step"])
+        if failed:
+            raise RuntimeError("infra failed")
+        return {"ok": True, "success_rate": 1 / 89, "optimizer_step": 5}
+
+    monkeypatch.setattr(tb21_worker, "run_evaluation", evaluate)
+    monkeypatch.setattr(tb21_worker, "record_result", lambda req, result, output: recorded.append(result))
+    assert tb21_worker.consume_one(tmp_path / "queue")
+    assert not tb21_worker.consume_one(tmp_path / "queue")
+    assert called == [5]
+    status = json.loads(next((tmp_path / "queue/jobs").glob("*/status.json")).read_text())
+    assert status["status"] == ("failed" if failed else "completed")
+    assert recorded[0]["ok"] is not failed
+    if failed:
+        assert "success_rate" not in recorded[0]
+
+
+def test_background_four_engines_enforce_total20_and_per_engine5(dataset, tmp_path, monkeypatch):
+    monkeypatch.setenv("TB21_EVAL_OUTPUT", str(tmp_path / "pool-eval"))
+    monkeypatch.setenv("TB21_CONCURRENCY", "20")
+    states = [SimpleNamespace(index=i) for i in range(4)]
+    running, peaks, calls = [0] * 4, [0] * 4, []
+
+    async def trial(row, config, output, state):
+        i = state.index
+        running[i] += 1
+        peaks[i] = max(peaks[i], running[i])
+        calls.append(row["label"])
+        await asyncio.sleep(0.001)
+        running[i] -= 1
+        return 0.0
+
+    monkeypatch.setattr(tb21_eval, "_trial", trial)
+    result = asyncio.run(tb21_eval._evaluate(None, 4, SimpleNamespace(path=str(dataset)), states=states))
+    assert peaks == [5] * 4 and len(set(calls)) == len(result) == 89
+
+
+def test_background_server_uses_fixed_model_and_five_requests_per_tp2():
+    argv = tb21_worker.server_command(Path("/snapshot/step5"), 31001, 262144)
+    assert argv[argv.index("--model-path") + 1] == "/snapshot/step5"
+    assert argv[argv.index("--tp-size") + 1] == "2"
+    assert argv[argv.index("--max-running-requests") + 1] == "5"
+
+
+def test_background_cleans_owned_child_groups_even_if_leader_exited(monkeypatch):
+    signals = []
+    monkeypatch.setattr(tb21_worker.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    process = SimpleNamespace(pid=12345, wait=lambda **kwargs: 1)
+    tb21_worker.stop_servers([process])
+    assert signals == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_background_tensorboard_uses_checkpoint_step_not_current_train_step(queue_args, tmp_path, ok):
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    request = tb21_queue.build_request(queue_args, 4, queue_args.eval_datasets[0])
+    result = {"ok": ok, "elapsed_sec": 100, "completed_at_unix": 200}
+    if ok:
+        result["success_rate"] = 1 / 89
+    tb21_queue.record_result(request, result, tmp_path / "result")
+    events = EventAccumulator(request["tensorboard_dir"]).Reload()
+    assert events.Scalars("eval/tb21/completed")[0].step == 5
+    assert ("eval/tb21" in events.Tags()["scalars"]) is ok
+
+
+def test_background_snapshot_preserves_checkpoint_text_and_frozen_vision(tmp_path, monkeypatch):
+    import safetensors.torch
+    import torch
+    import torch.distributed.checkpoint as dist_cp
+
+    from examples.terminal_agent_rl.tb21_snapshot import export_snapshot
+
+    # 真实GPU PYTHONPATH中Megatron/tools会遮蔽Slime的namespace tools。
+    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+
+    origin = tmp_path / "base"
+    origin.mkdir()
+    weights = {
+        "model.language_model.embed_tokens.weight": torch.zeros(4, 2, dtype=torch.bfloat16),
+        "model.language_model.layers.0.mlp.experts.gate_up_proj": torch.zeros(2, 4, 2, dtype=torch.bfloat16),
+        "model.language_model.layers.0.mlp.experts.down_proj": torch.zeros(2, 2, 2, dtype=torch.bfloat16),
+        "model.visual.frozen.weight": torch.ones(2, dtype=torch.bfloat16),
+    }
+    filename = "model-00001-of-00001.safetensors"
+    safetensors.torch.save_file(weights, origin / filename)
+    (origin / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {k: filename for k in weights}}))
+    (origin / "config.json").write_text("{}")
+    checkpoint = tmp_path / "iter_0000004"
+    state = {
+        "embedding.word_embeddings.weight": torch.full((4, 2), 0.25, dtype=torch.bfloat16),
+        "decoder.layers.0.mlp.experts.experts.linear_fc1.weight": torch.full((2, 4, 2), 0.5, dtype=torch.bfloat16),
+        "decoder.layers.0.mlp.experts.experts.linear_fc2.weight": torch.full((2, 2, 2), 0.75, dtype=torch.bfloat16),
+    }
+    dist_cp.save(state, checkpoint_id=checkpoint)
+    args = SimpleNamespace(vocab_size=4, q_lora_rank=None, kv_channels=2, hidden_size=2, num_attention_heads=1, num_query_groups=1)
+    torch.save({"iteration": 4, "args": args}, checkpoint / "common.pt")
+    output = tmp_path / "snapshot"
+    export_snapshot(checkpoint, origin, output, 5)
+    result = safetensors.torch.load_file(output / filename)
+    assert torch.equal(result["model.language_model.embed_tokens.weight"], state["embedding.word_embeddings.weight"])
+    assert torch.equal(result["model.language_model.layers.0.mlp.experts.gate_up_proj"], state["decoder.layers.0.mlp.experts.experts.linear_fc1.weight"])
+    assert torch.equal(result["model.visual.frozen.weight"], weights["model.visual.frozen.weight"])
+    assert json.loads((output / "snapshot-receipt.json").read_text())["ok"]
+    with pytest.raises(FileExistsError):
+        export_snapshot(checkpoint, origin, output, 5)
+    state.pop("embedding.word_embeddings.weight")
+    missing = tmp_path / "missing"
+    dist_cp.save(state, checkpoint_id=missing)
+    torch.save({"iteration": 4, "args": args}, missing / "common.pt")
+    with pytest.raises(ValueError, match="incomplete"):
+        export_snapshot(missing, origin, tmp_path / "rejected", 5)
 
 
 @pytest.fixture
