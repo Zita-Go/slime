@@ -153,6 +153,10 @@ def _task_metadata(sample: Sample) -> dict[str, Any]:
 
 
 def _session_id(sample: Sample, item_id: str) -> str:
+    if sample.status == Sample.Status.ABORTED:
+        # 上次运行已drop_session，旧sid仍在closed中保护迟到请求。
+        # 基础设施失败重试须新开会话，不能清除旧tombstone或沿用旧sid。
+        return f"terminal-{item_id}-retry-{secrets.token_hex(16)}"
     if sample.session_id:
         return sample.session_id
     if sample.index is not None and sample.group_index is not None:

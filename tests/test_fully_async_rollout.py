@@ -24,6 +24,7 @@ import threading
 import time
 import types
 from collections import deque
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 # ``fully_async_rollout`` imports ``sglang_rollout``, which needs sglang_router
@@ -47,10 +48,14 @@ except ImportError:
 import pytest
 
 import slime.rollout.fully_async_rollout as fa
+from slime.rollout import sglang_rollout
+from slime.rollout.base_types import iter_samples
+from slime.rollout.data_source import RolloutDataSourceWithBuffer, pop_first
 from slime.rollout.filter_hub.base_types import DynamicFilterOutput
 from slime.rollout.filter_hub.dynamic_sampling_filters import check_reward_nonzero_std
 from slime.utils.staleness import compute_staleness_metrics, sample_staleness
 from slime.utils.types import Sample
+from slime.utils.async_utils import AsyncPacer
 
 NUM_GPUS = 0
 
@@ -207,6 +212,118 @@ def test_done_callback_requeues_nested_aborted_group(monkeypatch):
 
     assert data_buffer.requeued == [nested_group]
     assert worker.queue_size() == 0
+
+
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_nested_aborted_group_requeues_resumes_and_keeps_sixteen_rollouts(monkeypatch, deterministic):
+    """真实buffer→group入口→custom generate→callback，不能只测ABORTED入队。"""
+
+    async def exercise():
+        args = SimpleNamespace(
+            n_samples_per_prompt=16,
+            partial_rollout=False,
+            group_rm=False,
+            custom_generate_function_path="test.resume_fanout",
+            rollout_sample_hook_path=None,
+            sglang_enable_deterministic_inference=deterministic,
+        )
+        state = SimpleNamespace(
+            aborted=False,
+            semaphore=asyncio.Semaphore(16),
+            generation_pacer=AsyncPacer(),
+            dp_rank_context=lambda: nullcontext(None),
+            active_server_generations=0,
+            group_sampling_seeds=list(range(700, 716)),
+        )
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _: state)
+        monkeypatch.setattr(fa, "GenerateState", lambda _: state)
+        source = RolloutDataSourceWithBuffer.__new__(RolloutDataSourceWithBuffer)
+        source.args, source.buffer, source.buffer_filter = args, [], pop_first
+        worker = fa.AsyncRolloutWorker(args, source, concurrency=16)
+        group = [
+            [
+                Sample(
+                    index=i,
+                    group_index=3,
+                    response="done",
+                    status=Sample.Status.COMPLETED,
+                    reward=float(i % 2),
+                    tokens=[1, 2],
+                    response_length=1,
+                    loss_mask=[1],
+                    rollout_log_probs=[-0.25],
+                    session_id=f"sid-{i}",
+                )
+                for _ in range(2)
+            ]
+            for i in range(16)
+        ]
+        aborted = Sample(index=7, group_index=3, prompt="original", status=Sample.Status.ABORTED)
+        group[7] = [aborted]
+        original = [
+            (leaf, list(leaf.tokens), leaf.reward, list(leaf.loss_mask), list(leaf.rollout_log_probs), leaf.session_id)
+            for branch in group
+            if branch is not group[7]
+            for leaf in branch
+        ]
+        attempts = []
+
+        async def generate(_args, sample, params):
+            assert sample is aborted
+            assert sample.session_id is not None
+            attempts.append(params.copy())
+            assert params.get("sampling_seed") == (707 if deterministic else None)
+            params["max_new_tokens"] = 0
+            if len(attempts) < 3:
+                return [sample]  # 连续ABORTED不能不断增加列表深度。
+            return [
+                Sample(
+                    index=sample.index,
+                    group_index=sample.group_index,
+                    response="new",
+                    reward=1.0,
+                    status=Sample.Status.COMPLETED,
+                    tokens=[1, token],
+                    response_length=1,
+                    loss_mask=[1],
+                    rollout_log_probs=[-0.5],
+                )
+                for token in (3, 4)
+            ]
+
+        async def reward(_args, samples):
+            assert samples == [], "已带reward的段不能重打分"
+            return []
+
+        monkeypatch.setattr(sglang_rollout, "load_function", lambda _: generate)
+        monkeypatch.setattr(sglang_rollout, "batched_async_rm", reward)
+        worker._make_done_cb(0)(SimpleNamespace(result=lambda: group))
+        assert worker.queue_size() == 0
+        params = {"max_new_tokens": 8}
+        for attempt in range(3):
+            resumed = source.get_samples(1)
+            assert len(resumed) == 1 and len(resumed[0]) == 16
+            result = await sglang_rollout.generate_and_rm_group(args, resumed[0], params)
+            assert len(result) == 16 and all(isinstance(branch, list) for branch in result)
+            assert all(isinstance(leaf, Sample) for branch in result for leaf in branch)
+            worker._make_done_cb(attempt + 1)(SimpleNamespace(result=lambda result=result: result))
+        assert not source.buffer and worker.queue_size() == 1
+        delivered = worker.get_completed_groups()[0][1]
+        assert len(delivered) == 16 and len(delivered[7]) == 2
+        assert [leaf.index for leaf in delivered[7]] == [7, 7]
+        assert len(attempts) == 3 and all(p["max_new_tokens"] == 8 for p in attempts)
+        assert params == {"max_new_tokens": 8}
+        for leaf, tokens, reward_value, mask, log_probs, sid in original:
+            assert leaf in list(iter_samples(delivered))
+            assert (leaf.tokens, leaf.reward, leaf.loss_mask, leaf.rollout_log_probs, leaf.session_id) == (
+                tokens,
+                reward_value,
+                mask,
+                log_probs,
+                sid,
+            )
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.unit

@@ -2,6 +2,8 @@
 
 本目录把 NexTask RFC-0012 v3 动态题包接入 slime。训练时，rollout worker 在本地运行多轮 agent loop，模型通过 `bash` 工具操作每题独立的 E2B 模板；结束后由冻结的 NexTask runtime 创建候选快照，并使用题包自带的 shell-pairwise verifier 与参考快照比较。
 
+基础设施失败产生ABORTED结果时，fully-async会把整组放回buffer。一条原始采样可含多个训练段，因此恢复入口按Sample叶子处理会话和生成，只恢复未完成段；默认已完成段的token、mask、logprob和reward保持，partial模式仍沿用既有off-policy mask规则，外层n个独立采样槽不展平。Terminal重试必须新建session ID，保留旧会话的closed保护，避免迟到请求串入重试或收到HTTP503。修复源码不会热重载到已运行的RolloutManager；下一次正常启动生效，不为应用补丁中断当前训练。
+
 ## 安全边界
 
 - 模型只能通过宿主侧 `bash` 工具进入 `dynamic_verification_manifest.json` 冻结的 `template_identity`；默认在模板内的 `/app` 工作。

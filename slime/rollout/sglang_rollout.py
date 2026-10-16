@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from slime.backends.sglang_utils.server_control import abort_servers_until_idle
 from slime.observability.trace_utils import build_sglang_meta_trace_attrs, trace_function, trace_span
-from slime.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput, finalize_rollout_groups
+from slime.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput, finalize_rollout_groups, iter_samples
 from slime.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, should_drop_dynamic_filter_output
 from slime.rollout.sample_hooks import apply_rollout_sample_hooks
 from slime.utils.async_utils import AsyncPacer, run
@@ -292,6 +292,14 @@ async def generate_and_rm(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
+    if isinstance(sample, list):
+        # 回队列的一个采样槽可能包含多个训练段。只恢复未完成的叶子，
+        # 在槽内合并新fan-out，保留外层n_samples_per_prompt，避免重试越嵌越深。
+        resumed = await asyncio.gather(
+            *(generate_and_rm(args, child, sampling_params.copy(), evaluation=evaluation) for child in sample)
+        )
+        return [leaf for result in resumed for leaf in iter_samples(result)]
+
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
         sample.loss_mask = [0] * sample.response_length
@@ -382,7 +390,7 @@ async def generate_and_rm(
     attrs_getter=lambda args, group, sampling_params, evaluation=False: {"group_size": len(group)},
 )
 async def generate_and_rm_group(
-    args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+    args: Namespace, group: list[Sample | list[Sample]], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample] | list[list[Sample]]:
     # ``generate_and_rm`` may return either a ``Sample`` or a ``list[Sample]``
     # depending on whether the ``--custom-generate-function-path`` callable
@@ -397,7 +405,7 @@ async def generate_and_rm_group(
         return group
 
     # Generate a unique session_id for each sample in the group
-    for sample in group:
+    for sample in iter_samples(group):
         if sample.session_id is None:
             sample.session_id = str(uuid.uuid4())
 

@@ -44,6 +44,7 @@ from slime.utils.types import Sample  # noqa: E402
 from tests.test_agent._fakes import FakeSandbox, FakeTokenizer, fake_call_sglang_generate  # noqa: E402
 
 _REAL_SLEEP = asyncio.sleep
+NUM_GPUS = 0
 
 
 async def _fast_sleep(_seconds):
@@ -183,6 +184,43 @@ def test_terminal_generate_drops_indeterminate_verifier_result(tmp_path: Path) -
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         asyncio.run(run_case(monkeypatch))
+
+
+def test_terminal_aborted_retry_uses_fresh_session_not_closed_tombstone(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    grade = {
+        "ok": False,
+        "verdict": "INDETERMINATE",
+        "reason_code": "sandbox_infra",
+        "candidate_snapshot_cleanup_confirmed": True,
+    }
+
+    async def exercise(monkeypatch):
+        tokenizer = _patch_rollout(monkeypatch, tmp_path, grade)
+        monkeypatch.setattr(
+            adapters_common,
+            "call_sglang_generate",
+            fake_call_sglang_generate([("first try", "stop", None), ("second try", "stop", None)], tokenizer),
+        )
+        base = _sample(package)
+        failed = await generate.generate(_args(), base, {"max_new_tokens": 64})
+        first_sid = base.session_id
+        state = generate._AdapterService(_args())
+        assert first_sid in state.adapter.closed
+        assert failed[0].status == Sample.Status.ABORTED
+        grade.update(ok=True, verdict="NON_EQUAL", score_ratio=0.5)
+        retried = await generate.generate(_args(), failed[0], {"max_new_tokens": 64})
+        assert base.session_id != first_sid
+        assert first_sid in state.adapter.closed  # 不能为了重试撤销旧会话的迟到请求保护。
+        assert all(s.status == Sample.Status.COMPLETED and not s.remove_sample for s in retried)
+        assert sum(s.reward for s in retried) == pytest.approx(0.5)
+        assert all(sum(s.loss_mask) > 0 for s in retried)
+        assert base.index == 3 and base.group_index == 2
+        assert base.prompt == "Repair the service and leave it running."
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        asyncio.run(exercise(monkeypatch))
 
 
 def test_reward_requires_determinate_verdict_and_snapshot_cleanup() -> None:
@@ -338,3 +376,7 @@ def test_nextask_sandbox_requires_confirmed_live_cleanup() -> None:
         assert failed.cleanup_confirmed is False
 
     asyncio.run(run_case())
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
