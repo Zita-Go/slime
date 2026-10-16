@@ -1,14 +1,18 @@
 """TB2.1只读测试集、评测输出与启动参数的CPU回归。"""
 
+import ast
 import asyncio
 import copy
 import json
+import logging
+import math
 import os
 import subprocess
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import pytest
 import yaml
@@ -224,7 +228,8 @@ def test_tensorboard_native_log_roundtrip(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("phase,save,num", [("smoke", "1", "3"), ("long", "5", "100")])
-def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, num):
+@pytest.mark.parametrize("resume", [False, True])
+def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, num, resume):
     executable = sys.executable
     mockbin = tmp_path / "bin"
     mockbin.mkdir()
@@ -266,6 +271,7 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         TERMINAL_RL_E2B_CONFIG_FILE=str(config),
         MASTER_ADDR="127.0.0.1",
         RUN_ROOT=str(tmp_path / "run"),
+        LOAD_PATH=str(ref) if resume else "",
     )
     for variable in ("SAVE_INTERVAL", "NUM_ROLLOUT", "EVAL_INTERVAL", "USE_TENSORBOARD", "ENABLE_TB21_EVAL", "TENSORBOARD_DIR"):
         env.pop(variable, None)
@@ -279,10 +285,75 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert "--accumulate-allreduce-grads-in-fp32" in argv and "--optimizer-cpu-offload" in argv
     assert argv[argv.index("--n-samples-per-prompt") + 1] == "16"
     assert argv[argv.index("--global-batch-size") + 1] == "128"
+    assert ("--load" in argv) is resume
+    assert ("--use-checkpoint-opt-param-scheduler" in argv) is resume
+    assert not {"--finetune", "--no-load-optim", "--no-load-rng", "--override-opt-param-scheduler"} & set(argv)
     assert argv[argv.index("--eval-function-path") + 1] == "examples.terminal_agent_rl.tb21_eval.evaluate"
     runtime = json.loads(next(a.split("=", 1)[1] for a in argv if a.startswith("--runtime-env-json=")))
     assert runtime["env_vars"]["TENSORBOARD_DIR"] == str(tmp_path / "run/tensorboard")
     assert runtime["env_vars"]["TB21_EVAL_OUTPUT"] == str(tmp_path / "run/tb21-eval")
+
+
+@pytest.fixture
+def native_scheduler_class():
+    native = Path(os.environ.get("MEGATRON_ROOT", "/root/Megatron-LM"))
+    if not native.exists():
+        pytest.skip("Set MEGATRON_ROOT to the pinned Megatron checkout for native scheduler tests")
+    relative = "megatron/core/optimizer_param_scheduler.py"
+    source = subprocess.check_output(["git", "-C", str(native), "show", f"1dcf0dafa884ad52ffb243625717a3471643e087:{relative}"], text=True)
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == "OptimizerParamScheduler")
+    namespace = {"Optional": Optional, "math": math, "logging": logging, "logger": logging.getLogger(__name__), "log_single_rank": lambda *a, **k: None}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), relative, "exec"), namespace)
+    return namespace["OptimizerParamScheduler"]
+
+
+@pytest.mark.parametrize("new_total_samples", [512, 12800])
+def test_native_scheduler_resume_preserves_progress_lr_and_optimizer(native_scheduler_class, new_total_samples):
+    import torch
+
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    optimizer = torch.optim.AdamW([parameter], lr=1e-6, weight_decay=0.1)
+    parameter.grad = torch.tensor([0.5])
+    optimizer.step()
+    optimizer_state = copy.deepcopy(optimizer.state_dict()["state"])
+    model_value = parameter.detach().clone()
+
+    def scheduler(total, restore):
+        return native_scheduler_class(
+            optimizer,
+            init_lr=0.0,
+            max_lr=1e-6,
+            min_lr=0.0,
+            lr_warmup_steps=0,
+            lr_decay_steps=total,
+            lr_decay_style="constant",
+            start_wd=0.1,
+            end_wd=0.1,
+            wd_incr_steps=total,
+            wd_incr_style="constant",
+            use_checkpoint_opt_param_scheduler=restore,
+            override_opt_param_scheduler=False,
+        )
+
+    original = scheduler(128, False)
+    original.step(128)
+    saved = original.state_dict()
+    with pytest.raises(AssertionError, match="total number of iterations"):
+        scheduler(new_total_samples, False).load_state_dict(saved)
+    restored = scheduler(new_total_samples, True)
+    restored.load_state_dict(saved)
+    assert restored.num_steps == 128
+    assert restored.lr_decay_steps == restored.wd_incr_steps == 128
+    for expected in (256, 384, 512):
+        restored.step(128)
+        assert restored.num_steps == expected
+        assert optimizer.param_groups[0]["lr"] == 1e-6
+        assert optimizer.param_groups[0]["weight_decay"] == 0.1
+    torch.testing.assert_close(parameter.detach(), model_value, rtol=0, atol=0)
+    actual = optimizer.state_dict()["state"]
+    for key, state in optimizer_state.items():
+        for name, value in state.items():
+            torch.testing.assert_close(actual[key][name], value, rtol=0, atol=0)
 
 
 if __name__ == "__main__":

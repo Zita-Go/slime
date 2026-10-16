@@ -147,7 +147,8 @@ CKPT_ARGS=(
     --save-interval "$SAVE_INTERVAL"
 )
 if [[ -n "${LOAD_PATH:-}" ]]; then
-    CKPT_ARGS+=(--load "$LOAD_PATH")
+    # 完整恢复时沿用已保存的scheduler及进度，允许本次NUM_ROLLOUT与原任务不同。
+    CKPT_ARGS+=(--load "$LOAD_PATH" --use-checkpoint-opt-param-scheduler)
 fi
 
 ROLLOUT_ARGS=(
