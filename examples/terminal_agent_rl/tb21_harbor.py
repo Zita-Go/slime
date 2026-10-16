@@ -14,7 +14,14 @@ from harbor.agents.base import BaseAgent
 from nexau_harbor.e2b_environment import NexAUE2BEnvironment
 
 from .agent import PROMPT_PREFIX, TerminalToolAgent
-from .tb21_timeouts import agent_time_budget_sec, harbor_agent_timeout_sec, max_turns, reasoning_effort
+from .tb21_timeouts import (
+    AGENT_SETUP_TIMEOUT_SEC,
+    VERIFIER_TIMEOUT_SEC,
+    agent_time_budget_sec,
+    harbor_agent_timeout_sec,
+    max_turns,
+    reasoning_effort,
+)
 
 
 class SlimeTerminalAgent(BaseAgent):
@@ -124,12 +131,13 @@ async def run_trial(options) -> None:
             import_path="examples.terminal_agent_rl.tb21_harbor:SlimeTerminalAgent",
             model_name="slime-actor",
             override_timeout_sec=harbor_agent_timeout_sec(budget),
+            override_setup_timeout_sec=AGENT_SETUP_TIMEOUT_SEC,
         ),
         environment=EnvironmentConfig(
             import_path="examples.terminal_agent_rl.tb21_harbor:AuditedE2BEnvironment",
             delete=True,
         ),
-        verifier=VerifierConfig(disable=False),
+        verifier=VerifierConfig(disable=False, override_timeout_sec=VERIFIER_TIMEOUT_SEC),
     )
     trial = await Trial.create(config)
     # SIGTERM先取消Trial，令Harbor进入finally清理，不直接杀死仍持有sandbox的进程。

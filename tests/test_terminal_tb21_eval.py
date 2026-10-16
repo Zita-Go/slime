@@ -198,6 +198,8 @@ def test_tb21_timeout_defaults_are_six_hour_agent_and_nine_hour_trial(monkeypatc
     assert tb21_timeouts.trial_timeout_sec() == 32400
     assert tb21_timeouts.max_turns() == 100000
     assert tb21_timeouts.reasoning_effort() == "high"
+    assert tb21_timeouts.AGENT_SETUP_TIMEOUT_SEC == 3600
+    assert tb21_timeouts.VERIFIER_TIMEOUT_SEC == 1800
 
 
 def test_tb21_timeout_override_must_leave_room_for_harbor_cleanup(monkeypatch):

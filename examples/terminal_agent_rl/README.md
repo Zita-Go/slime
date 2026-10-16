@@ -46,7 +46,7 @@ tensorboard --logdir /绝对路径/RUN/tensorboard --host 127.0.0.1 --port 6006
 
 TB2.1使用Harbor 0.21.0的Task/Trial/原生verifier和独立E2B环境，不调用NexTask pairwise verifier。Agent仍是训练的TerminalToolAgent/bash；仅工作目录按原生任务Dockerfile调整，原始测试不改。结果应标注`slime-terminal-bash` harness，不冒充其他官方Agent的leaderboard数字。tests/solution仅留在host task包中，由Harbor在正确阶段处理；模型prompt只有公开instruction。
 
-TB2.1评测对齐step90的可移植参数：6小时Agent、temperature1.0/top_p0.95/top_k20、high reasoning、单轮65536 token及评测专用100000轮失控上限；E2B keepalive最长24小时。Claude Code在196608 token触发的语义摘要压缩尚未在TerminalToolAgent中实现，prefix merging只处理训练轨迹表示，不能缩短实际推理prompt；在单独实现并验收前不以丢弃旧消息替代。
+TB2.1评测对齐step90的可移植参数：6小时Agent、temperature1.0/top_p0.95/top_k20、high reasoning、单轮65536 token及评测专用100000轮失控上限；Agent setup为3600秒、verifier为1800秒、环境构建为600秒，E2B keepalive最长24小时。Claude Code在196608 token触发的语义摘要压缩尚未在TerminalToolAgent中实现，prefix merging只处理训练轨迹表示，不能缩短实际推理prompt；在单独实现并验收前不以丢弃旧消息替代。
 
 默认`TB21_EVAL_MODE=async`：每5更新仅提交固定checkpoint请求，不等待89题完成。`TB21_EVAL_QUEUE`默认指向共享盘`RL/tb21-eval-queue`。额外单机8H100运行4个TP2实例，每实例5题，总并发20；worker不加入训练Ray，不连接训练推理服务。独立Pod使用与训练相同的保护E2B配置及专用代理、Harbor Python：
 
