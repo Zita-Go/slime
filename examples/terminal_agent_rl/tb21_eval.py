@@ -30,6 +30,10 @@ async def _trial(row, config, output, state):
         "max_new_tokens": config.max_response_len,
         "stop_token_ids": config.stop_token_ids,
     }
+    if config.top_p is not None and config.top_p < 1.0:
+        # Agent训练依赖逐token top-p支持集合；独立评测服务必须显式请求，
+        # 不能在Adapter中放宽缺失数据校验或事后伪造候选集合。
+        defaults["custom_params"] = {"return_top_p_token_ids": True}
     output.mkdir()
     receipt_path = output / "receipt.json"
     env = e2b_subprocess_env(dict(os.environ))

@@ -52,6 +52,8 @@ EVAL_EXPECTED_POD=<已核验的独立评测Pod全名> bash examples/terminal_age
 
 worker须通过Pod本地monitor托管，启动前核验精确Job/8GPU/数据与E2B链路。等待队列不等于推理服务已部署：真实导出/加载/89题结果分别保存在`jobs/*/evaluation/{hf-snapshot,sglang-*.log,inference-ready.json,trials}`。仅`status=completed`且89题/清理全部确认才有分数；失败不是0分，保留日志并且不终止训练。worker中断后的running任务必须人工核验，不覆盖重跑。每步结果按来源optimizer step写入`$TENSORBOARD_DIR/tb21-background`，不按完成时的最新训练step归属。
 
+TB2.1沿用`top_p=0.95`时，评测session会显式设置`custom_params.return_top_p_token_ids=true`，要求SGLang返回逐token候选ID和offset。缺失时Adapter继续fail-closed；不能改成`top_p=1`规避校验，也不能事后补造support。
+
 checkpoint请求是pin，所有尚未完成的评测来源都不能被清理。本实现不删除任何RL checkpoint或HF快照；容量不足需处理后再继续。`SAVE_INTERVAL`须整除`EVAL_INTERVAL`。如显式选择`TB21_EVAL_MODE=sync`，才沿用原来等待当前同步权重评测的方式。当前已启动的三步进程不会自动更换hook；其全局终点step4本来不触发每5步评测。
 
 提速参数保持分开测试：`SGLANG_SERVER_CONCURRENCY=8`（原4）、`MAX_TOKENS_PER_GPU=16384`（原8192）、`MOE_DISPATCHER=deepep`（原alltoall，对应flex/backend deepep）。默认值不变；必须先验收当前恢复任务与有效checkpoint、无其他活跃训练，再以独立RUN逐项试验，不修改n16/global128/FP32/context/Agent预算。比较完整更新耗时及显存，不用采样等待期的低显存推断反向安全。

@@ -145,6 +145,44 @@ def test_eval_config_has_one_attempt_no_train_hook():
     assert config.max_response_len == 8192
 
 
+@pytest.mark.parametrize("top_p,expected", [(0.95, {"return_top_p_token_ids": True}), (1.0, None)])
+def test_tb21_trial_requests_real_top_p_replay_metadata(tmp_path, monkeypatch, top_p, expected):
+    opened = []
+
+    class Adapter:
+        def open_session(self, session_id, **kwargs):
+            opened.append(kwargs["sampling_defaults"])
+
+        async def drop_session(self, session_id, wait_timeout):
+            pass
+
+    class Process:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def launch(*args, **kwargs):
+        receipt = Path(args[args.index("--receipt") + 1])
+        receipt.write_text(json.dumps({"ok": True, "reward": 0, "cleanup": {"live_sandbox_cleanup_confirmed": True}}))
+        return Process()
+
+    monkeypatch.setattr(tb21_eval.asyncio, "create_subprocess_exec", launch)
+    monkeypatch.setenv("TB21_RUNTIME_PYTHON", sys.executable)
+    config = SimpleNamespace(
+        path=str(tmp_path / "tb21.jsonl"),
+        temperature=0.7,
+        top_p=top_p,
+        top_k=40,
+        max_response_len=8192,
+        stop_token_ids=[248046, 248044],
+    )
+    state = SimpleNamespace(adapter=Adapter(), adapter_url="http://127.0.0.1:1", max_context_len=262144)
+    reward = asyncio.run(tb21_eval._trial({"label": "task"}, config, tmp_path / "trial", state))
+    assert reward == 0
+    assert opened[0].get("custom_params") == expected
+
+
 def test_eval_hook_cannot_be_used_for_training():
     with pytest.raises(ValueError, match="eval-only"):
         tb21_eval.evaluate(SimpleNamespace(), 0, None, evaluation=False)
