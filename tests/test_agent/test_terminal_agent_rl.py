@@ -94,8 +94,9 @@ def test_training_defaults_select_claude_code_with_four_hour_budget(monkeypatch)
     config = generate.TerminalConfig.from_env()
     agent = TerminalToolAgent()
     assert config.agent_name == "claude_code"
+    assert config.cc_transport == "e2b_pull"
     assert config.adapter_public_host is None
-    assert config.adapter_bind_host == "0.0.0.0"
+    assert config.adapter_bind_host == "127.0.0.1"
     assert config.agent_time_budget_sec == 14400
     assert config.rollout_guard_sec == (
         14400 + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
@@ -224,6 +225,7 @@ def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path
             dataclasses.replace(
                 generate.CONFIG,
                 agent_name="claude_code",
+                cc_transport="direct",
                 adapter_public_host="127.0.0.1",
                 adapter_bind_host="127.0.0.1",
             ),
@@ -262,10 +264,15 @@ def test_terminal_claude_code_runs_as_root(monkeypatch):
         )
         assert result == 0
         assert any("/root/.claude/settings.json" in command and user == "root" for command, user in sandbox.exec_log)
+        assert any("chown root:root /app/.harness" in command for command, _user in sandbox.exec_log)
         launcher = next(value for path, value in sandbox.files.items() if path.endswith(".run.sh"))
         assert "export HOME=/root" in launcher
+        assert "--dangerously-skip-permissions" in launcher
+        assert "--allow-dangerously-skip-permissions" in launcher
+        assert "--permission-mode bypassPermissions" not in launcher
         assert captured["ANTHROPIC_BASE_URL"] == "http://adapter:18001"
         assert captured["ANTHROPIC_AUTH_TOKEN"] == "session-root"
+        assert captured["IS_SANDBOX"] == "1"
 
     monkeypatch.setattr(sandbox_module.asyncio, "sleep", _fast_sleep)
     asyncio.run(run_case())

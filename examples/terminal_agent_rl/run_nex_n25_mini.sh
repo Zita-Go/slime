@@ -15,6 +15,7 @@ TERMINAL_RL_E2B_CONFIG_FILE=${TERMINAL_RL_E2B_CONFIG_FILE:-/gpfs/users/i-zhanggu
 E2B_VENDOR_DIR=${E2B_VENDOR_DIR:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/vendor/e2b-2.21.0}
 TERMINAL_RL_E2B_PROXY=${TERMINAL_RL_E2B_PROXY-http://10.51.6.27:5023}
 TERMINAL_RL_AGENT=${TERMINAL_RL_AGENT:-claude_code}
+TERMINAL_RL_CC_TRANSPORT=${TERMINAL_RL_CC_TRANSPORT:-e2b_pull}
 SLIME_AGENT_NODE_TARBALL=${SLIME_AGENT_NODE_TARBALL:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/vendor/claude-code-2.1.193/node-v20.19.5-linux-x64.tar.gz}
 SLIME_AGENT_CC_TARBALL=${SLIME_AGENT_CC_TARBALL:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/vendor/claude-code-2.1.193/anthropic-ai-claude-code-2.1.193.tgz}
 EXPECTED_NODE_TARBALL_SHA256=${EXPECTED_NODE_TARBALL_SHA256:-4eba5fbe1fb10753bc06e42f001a91c5cec16798b7764a3e9257adc59af47fe1}
@@ -82,6 +83,7 @@ die() {
 [[ "$TB21_EVAL_MODE" == async || "$TB21_EVAL_MODE" == sync ]] || die "TB21_EVAL_MODE 必须为async/sync"
 [[ "$MOE_DISPATCHER" == alltoall || "$MOE_DISPATCHER" == deepep ]] || die "MOE_DISPATCHER 必须为alltoall/deepep"
 [[ "$TERMINAL_RL_AGENT" == claude_code || "$TERMINAL_RL_AGENT" == terminal_tool ]] || die "TERMINAL_RL_AGENT 必须为claude_code/terminal_tool"
+[[ "$TERMINAL_RL_CC_TRANSPORT" == direct || "$TERMINAL_RL_CC_TRANSPORT" == e2b_pull ]] || die "TERMINAL_RL_CC_TRANSPORT 必须为direct/e2b_pull"
 if [[ "$TERMINAL_RL_AGENT" == claude_code ]]; then
     [[ -f "$SLIME_AGENT_NODE_TARBALL" && ! -L "$SLIME_AGENT_NODE_TARBALL" ]] || die "固定Node包不存在或为符号链接"
     [[ -f "$SLIME_AGENT_CC_TARBALL" && ! -L "$SLIME_AGENT_CC_TARBALL" ]] || die "固定Claude Code包不存在或为符号链接"
@@ -272,7 +274,7 @@ export TERMINAL_RL_GRADE_TIMEOUT_SEC=${TERMINAL_RL_GRADE_TIMEOUT_SEC:-2400}
 export TERMINAL_RL_BOOT_CONCURRENCY=${TERMINAL_RL_BOOT_CONCURRENCY:-16}
 export TERMINAL_RL_MAX_TURNS=${TERMINAL_RL_MAX_TURNS:-400}
 export TERMINAL_RL_REASONING_EFFORT=${TERMINAL_RL_REASONING_EFFORT:-high}
-export TERMINAL_RL_AGENT SLIME_AGENT_NODE_TARBALL SLIME_AGENT_CC_TARBALL
+export TERMINAL_RL_AGENT TERMINAL_RL_CC_TRANSPORT SLIME_AGENT_NODE_TARBALL SLIME_AGENT_CC_TARBALL
 CC_SETTINGS_JSON='{"permissions":{"defaultMode":"bypassPermissions"},"autoCompactEnabled":true,"autoCompactWindow":196608}'
 CC_AGENTS_JSON='{"worker":{"description":"Handle a delegated terminal subtask and report concrete results","prompt":"Work on the delegated subtask inside the current sandbox. Inspect and modify the environment as needed, run relevant checks, and return a concise evidence-based result.","tools":["Read","Edit","Write","Grep","Glob","Bash"]}}'
 export SLIME_AGENT_CC_EXTRA_ARGS=${SLIME_AGENT_CC_EXTRA_ARGS:-"--settings '$CC_SETTINGS_JSON' --disable-slash-commands --agents '$CC_AGENTS_JSON' --disallowedTools WebFetch WebSearch"}
@@ -296,7 +298,7 @@ export MASTER_ADDR=${MASTER_ADDR:?NorthJob 未设置 MASTER_ADDR}
 export MASTER_PORT=${MASTER_PORT:-6379}
 export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-${MLP_SOCKET_IFNAME:-eth0}}
 export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-${MLP_SOCKET_IFNAME:-eth0}}
-if [[ "$TERMINAL_RL_AGENT" == claude_code ]]; then
+if [[ "$TERMINAL_RL_AGENT" == claude_code && "$TERMINAL_RL_CC_TRANSPORT" == direct ]]; then
     export ADAPTER_BIND_HOST=${ADAPTER_BIND_HOST:-0.0.0.0}
     export ADAPTER_PUBLIC_HOST=${ADAPTER_PUBLIC_HOST:-$(hostname -I | awk '{print $1}')}
     [[ -n "$ADAPTER_PUBLIC_HOST" && "$ADAPTER_PUBLIC_HOST" != 127.0.0.1 ]] || die "Claude Code需要E2B可达的ADAPTER_PUBLIC_HOST"
@@ -317,6 +319,7 @@ keys = (
     "E2B_VENDOR_DIR",
     "TERMINAL_RL_E2B_PROXY",
     "TERMINAL_RL_AGENT",
+    "TERMINAL_RL_CC_TRANSPORT",
     "SLIME_AGENT_NODE_TARBALL",
     "SLIME_AGENT_CC_TARBALL",
     "SLIME_AGENT_CC_EXTRA_ARGS",

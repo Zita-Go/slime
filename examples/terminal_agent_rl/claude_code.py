@@ -15,6 +15,10 @@ class RootClaudeCodeHarness(ClaudeCodeHarness):
     """复用标准CC协议，仅将配置与工具执行用户改为root。"""
 
     name = "claude_code_root"
+    launch_flags = (
+        "--dangerously-skip-permissions --allow-dangerously-skip-permissions "
+        "--output-format stream-json --include-partial-messages --include-hook-events --verbose"
+    )
 
     async def run(
         self,
@@ -49,6 +53,7 @@ class RootClaudeCodeHarness(ClaudeCodeHarness):
             "ANTHROPIC_BASE_URL": ctx.adapter_url,
             "ANTHROPIC_AUTH_TOKEN": ctx.session_id,
             "ANTHROPIC_MODEL": ctx.model_label,
+            "IS_SANDBOX": "1",
             **self.static_env,
         }
         if extra_envs := os.environ.get(self.extra_envs_env, "").strip():

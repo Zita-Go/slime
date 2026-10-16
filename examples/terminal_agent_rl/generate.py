@@ -23,6 +23,7 @@ from slime.utils.types import Sample
 
 from . import runtime
 from .agent import PROMPT_PREFIX, TerminalToolAgent
+from .cc_relay import E2BPullRelay
 from .claude_code import RootClaudeCodeHarness
 from .sandbox import NextaskE2BSandbox
 
@@ -33,6 +34,7 @@ logging.getLogger("e2b").setLevel(logging.WARNING)
 @dataclass(frozen=True)
 class TerminalConfig:
     agent_name: str
+    cc_transport: str
     adapter_public_host: str | None
     adapter_bind_host: str
     adapter_port: int
@@ -47,6 +49,9 @@ class TerminalConfig:
         agent_name = os.environ.get("TERMINAL_RL_AGENT", "claude_code").strip().lower()
         if agent_name not in {"claude_code", "terminal_tool"}:
             raise ValueError("TERMINAL_RL_AGENT must be claude_code or terminal_tool")
+        cc_transport = os.environ.get("TERMINAL_RL_CC_TRANSPORT", "e2b_pull").strip().lower()
+        if cc_transport not in {"direct", "e2b_pull"}:
+            raise ValueError("TERMINAL_RL_CC_TRANSPORT must be direct or e2b_pull")
         agent_budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "14400"))
         guard = int(os.environ.get("TERMINAL_RL_ROLLOUT_GUARD_SEC", "0") or 0)
         if guard <= 0:
@@ -54,9 +59,11 @@ class TerminalConfig:
         fork = int(value) if (value := os.environ.get("SLIME_FORK_MERGE_MAX_RESPONSE_TOKENS")) else None
         return cls(
             agent_name=agent_name,
+            cc_transport=cc_transport,
             adapter_public_host=os.environ.get("ADAPTER_PUBLIC_HOST") or None,
             adapter_bind_host=os.environ.get(
-                "ADAPTER_BIND_HOST", "0.0.0.0" if agent_name == "claude_code" else "127.0.0.1"
+                "ADAPTER_BIND_HOST",
+                "0.0.0.0" if agent_name == "claude_code" and cc_transport == "direct" else "127.0.0.1",
             ),
             adapter_port=int(os.environ.get("ADAPTER_PORT", "0")),
             fork_merge_threshold=fork,
@@ -117,7 +124,7 @@ class _AdapterService(metaclass=SingletonMeta):
         self.reasoning_parser = getattr(args, "sglang_reasoning_parser", None) or None
         sglang_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
         adapter_cls = AnthropicAdapter if CONFIG.agent_name == "claude_code" else OpenAIAdapter
-        if CONFIG.agent_name == "claude_code" and not CONFIG.adapter_public_host:
+        if CONFIG.agent_name == "claude_code" and CONFIG.cc_transport == "direct" and not CONFIG.adapter_public_host:
             raise RuntimeError(
                 "ADAPTER_PUBLIC_HOST is required for Claude Code because the E2B sandbox must reach the Anthropic adapter"
             )
@@ -138,7 +145,11 @@ class _AdapterService(metaclass=SingletonMeta):
                 "access_log_class": FilteredAccessLogger,
             },
         )
-        adapter_host = CONFIG.adapter_public_host if CONFIG.agent_name == "claude_code" else "127.0.0.1"
+        adapter_host = (
+            CONFIG.adapter_public_host
+            if CONFIG.agent_name == "claude_code" and CONFIG.cc_transport == "direct"
+            else "127.0.0.1"
+        )
         self.adapter_url = f"http://{adapter_host}:{self.app_handle.port}"
         logger.info(
             "[terminal_agent_rl] harness=%s tokenizer=%s adapter=%s context=%d tool_parser=%s reasoning_parser=%s",
@@ -149,6 +160,15 @@ class _AdapterService(metaclass=SingletonMeta):
             self.tool_parser,
             self.reasoning_parser,
         )
+
+
+@asynccontextmanager
+async def _agent_adapter_endpoint(sandbox: NextaskE2BSandbox, state: _AdapterService) -> AsyncIterator[str]:
+    if CONFIG.agent_name == "claude_code" and CONFIG.cc_transport == "e2b_pull":
+        async with E2BPullRelay(sandbox, state.adapter_url) as relay:
+            yield relay.adapter_url
+        return
+    yield state.adapter_url
 
 
 def _task_metadata(sample: Sample) -> dict[str, Any]:
@@ -233,26 +253,33 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                 if workspace.get("ok") is not True:
                     raise runtime.BridgeInvocationError(f"workspace materialization failed: {workspace!r}")
                 prompt = PROMPT_PREFIX + str(base_sample.prompt)
-                if CONFIG.agent_name == "claude_code":
-                    agent_exit_code = await _CLAUDE_CODE.run(
-                        sandbox,
-                        workdir="/app",
-                        session_id=session_id,
-                        adapter_url=state.adapter_url,
-                        time_budget_sec=CONFIG.agent_time_budget_sec,
-                        prompt=prompt,
-                    )
-                    agent_turns = None
-                else:
-                    agent_result = await _TERMINAL_AGENT.run(
-                        sandbox,
-                        session_id=session_id,
-                        adapter_url=state.adapter_url,
-                        time_budget_sec=CONFIG.agent_time_budget_sec,
-                        prompt=prompt,
-                    )
-                    agent_exit_code = agent_result.exit_code
-                    agent_turns = agent_result.turns
+                async with _agent_adapter_endpoint(sandbox, state) as adapter_url:
+                    if CONFIG.agent_name == "claude_code":
+                        agent_exit_code = await _CLAUDE_CODE.run(
+                            sandbox,
+                            workdir="/app",
+                            session_id=session_id,
+                            adapter_url=adapter_url,
+                            time_budget_sec=CONFIG.agent_time_budget_sec,
+                            prompt=prompt,
+                        )
+                        agent_turns = None
+                        try:
+                            trajectory = await sandbox.read_file("/app/.harness/trajectory.jsonl", user="root")
+                            Path(paths["root"]).mkdir(parents=True, exist_ok=True)
+                            (Path(paths["root"]) / "claude-code.jsonl").write_text(trajectory)
+                        except Exception as exc:  # noqa: BLE001 - grading can continue; retain warning for audit
+                            logger.warning("[terminal_agent_rl] %s failed to retain CC trajectory: %s", item_id, exc)
+                    else:
+                        agent_result = await _TERMINAL_AGENT.run(
+                            sandbox,
+                            session_id=session_id,
+                            adapter_url=adapter_url,
+                            time_budget_sec=CONFIG.agent_time_budget_sec,
+                            prompt=prompt,
+                        )
+                        agent_exit_code = agent_result.exit_code
+                        agent_turns = agent_result.turns
                 grade = await runtime.grade_sandbox(
                     sandbox_id=sandbox.sandbox_id,
                     package_dir=metadata["package_dir"],

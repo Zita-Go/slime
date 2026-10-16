@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import lzma
 import os
+import shlex
 import shutil
 import tempfile
 from abc import ABC, ABCMeta, abstractmethod
@@ -115,7 +116,9 @@ async def run_agent(
 ) -> int:
     """Launch the agent (start_cmd) and run it to completion, returning its exit code."""
     meta_dir = f"{workdir}/.harness"
-    await sb.exec(f"mkdir -p {meta_dir} && chown agent:agent {meta_dir}", user="root", check=True, timeout=30)
+    quoted_dir = shlex.quote(meta_dir)
+    owner = shlex.quote(f"{user}:{user}")
+    await sb.exec(f"mkdir -p {quoted_dir} && chown {owner} {quoted_dir}", user="root", check=True, timeout=30)
     exit_code, _ = await exec_and_wait(
         sb,
         cmd=start_cmd,

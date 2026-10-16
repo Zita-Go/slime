@@ -122,6 +122,8 @@ GPU 冒烟和训练入口默认设置 `TERMINAL_RL_E2B_PROXY=http://10.51.6.27:5
 
 直接在当前机器调用 Python 入口时默认直连；bridge 会清除继承的通用代理。若需要 GPU 入口直连，显式设置 `TERMINAL_RL_E2B_PROXY=''`。该变量只控制 E2B，不代理模型推理/Ray通信。
 
+CC回调模型的方向与上述E2B控制面相反。真实探针已确认E2B无法直连训练Pod的hostNetwork地址或当前CPU Pod地址，5023也不能把这些私网地址暴露给E2B。因此训练默认`TERMINAL_RL_CC_TRANSPORT=e2b_pull`：sandbox中的CC只请求`127.0.0.1`代理，rollout worker经既有E2B控制通道拉取请求并转发给本机loopback AnthropicAdapter。该链路已用固定CC 2.1.193、真实E2B和真实Adapter完成两轮Bash工具调用、Sample/有限logprob结构与sandbox清理验收；上游生成在网络资格测试中是确定性脚本，不能替代真实模型rollout或GRPO验收。`direct`模式仅供已有可达公开地址时显式使用，并要求`ADAPTER_PUBLIC_HOST`；完整设计与验收边界见[RFC](RFC-claude-code-harness.md)。
+
 只验证 E2B public workspace 与 verifier 闭环、不加载模型时，可运行：
 
 ```bash

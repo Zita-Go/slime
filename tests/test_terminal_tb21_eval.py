@@ -354,7 +354,6 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         SLIME_AGENT_CC_TARBALL=str(cc_tarball),
         EXPECTED_NODE_TARBALL_SHA256=hashlib.sha256(node_tarball.read_bytes()).hexdigest(),
         EXPECTED_CC_TARBALL_SHA256=hashlib.sha256(cc_tarball.read_bytes()).hexdigest(),
-        ADAPTER_PUBLIC_HOST="192.0.2.1",
     )
     for variable in (
         "SAVE_INTERVAL",
@@ -367,6 +366,7 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         "MOE_DISPATCHER",
         "MAX_GEN_LEN",
         "TERMINAL_RL_AGENT_TIME_BUDGET_SEC",
+        "TERMINAL_RL_CC_TRANSPORT",
         "TERMINAL_RL_MAX_TURNS",
         "TERMINAL_RL_REASONING_EFFORT",
         "TB21_MAX_TURNS",
@@ -396,8 +396,9 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TERMINAL_RL_MAX_TURNS"] == "400"
     assert runtime["env_vars"]["TERMINAL_RL_REASONING_EFFORT"] == "high"
     assert runtime["env_vars"]["TERMINAL_RL_AGENT"] == "claude_code"
-    assert runtime["env_vars"]["ADAPTER_BIND_HOST"] == "0.0.0.0"
-    assert runtime["env_vars"]["ADAPTER_PUBLIC_HOST"] == "192.0.2.1"
+    assert runtime["env_vars"]["TERMINAL_RL_CC_TRANSPORT"] == "e2b_pull"
+    assert runtime["env_vars"]["ADAPTER_BIND_HOST"] == "127.0.0.1"
+    assert "ADAPTER_PUBLIC_HOST" not in runtime["env_vars"]
     assert runtime["env_vars"]["SLIME_AGENT_NODE_TARBALL"] == str(node_tarball)
     assert runtime["env_vars"]["SLIME_AGENT_CC_TARBALL"] == str(cc_tarball)
     assert "autoCompactWindow" in runtime["env_vars"]["SLIME_AGENT_CC_EXTRA_ARGS"]
