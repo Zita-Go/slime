@@ -54,6 +54,19 @@ def test_existing_anti_affinity_is_retained_and_label_collision_fails():
         submit.require_distinct_hosts(job)
 
 
+def test_explicit_network_probe_forces_host_network_without_mutating_source():
+    job = _job()
+    original = copy.deepcopy(job)
+    networked = submit.require_host_network(job)
+    assert job == original
+    for task in networked["spec"]["tasks"]:
+        assert task["template"]["spec"]["hostNetwork"] is True
+        assert task["template"]["spec"]["dnsPolicy"] == "ClusterFirstWithHostNet"
+    submit.validate_host_network(networked)
+    with pytest.raises(ValueError, match="hostNetwork"):
+        submit.validate_host_network(job)
+
+
 def _sdk(tmp_path, *, response=None, tamper=False):
     uploads = []
     sdk = SimpleNamespace(build_job_yaml=_job)
@@ -87,6 +100,15 @@ def test_dry_run_never_uploads_and_real_submission_uses_validated_yaml(tmp_path,
     assert sdk.build_job_yaml is build
     assert sdk.infrawave_register_job_info_by_upload_yaml is upload
     assert "not-a-real-secret" not in capsys.readouterr().out
+
+
+def test_forced_host_network_is_validated_before_upload(tmp_path):
+    sdk, uploads = _sdk(tmp_path)
+    submit.run_create(None, sdk, force_host_network=True)
+    saved = yaml.safe_load((tmp_path / "job.yaml").read_text())
+    submit.validate_distinct_hosts(saved)
+    submit.validate_host_network(saved)
+    assert len(uploads) == 1
 
 
 def test_tampered_saved_manifest_is_rejected_before_upload(tmp_path):

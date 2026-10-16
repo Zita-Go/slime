@@ -3,6 +3,7 @@
 import copy
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,20 +40,38 @@ def validate_distinct_hosts(job):
         raise ValueError("上传清单缺少必选物理主机反亲和约束")
 
 
-def run_create(args, sdk, *, dry_run=False):
+def require_host_network(job):
+    """仅供显式网络资格任务覆盖SDK按小规格关闭hostNetwork的默认。"""
+    result = copy.deepcopy(job)
+    for task in result["spec"]["tasks"]:
+        spec = task["template"]["spec"]
+        spec["hostNetwork"] = True
+        spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+    return result
+
+
+def validate_host_network(job):
+    if require_host_network(job) != job:
+        raise ValueError("上传清单缺少显式hostNetwork资格配置")
+
+
+def run_create(args, sdk, *, dry_run=False, force_host_network=False):
     """复用 SDK 的入口/资源/认证与上传 API；不改共享 SDK 文件。"""
     original_build = sdk.build_job_yaml
     original_upload = sdk.infrawave_register_job_info_by_upload_yaml
 
     def build(*parts, **options):
-        return require_distinct_hosts(original_build(*parts, **options))
+        job = require_distinct_hosts(original_build(*parts, **options))
+        return require_host_network(job) if force_host_network else job
 
     def upload(**options):
         import yaml
 
         job = yaml.safe_load(Path(options["yamlPath"]).read_text())
         validate_distinct_hosts(job)
-        print(json.dumps({"physical_host_policy": "required-distinct", "job_alias": job["metadata"]["annotations"]["JobAlias"], "dry_run": dry_run}, ensure_ascii=False))
+        if force_host_network:
+            validate_host_network(job)
+        print(json.dumps({"physical_host_policy": "required-distinct", "host_network_forced": force_host_network, "job_alias": job["metadata"]["annotations"]["JobAlias"], "dry_run": dry_run}, ensure_ascii=False))
         if dry_run:
             return {"code": 0, "dry_run": True}
         return original_upload(**options)
@@ -87,7 +106,12 @@ def main():
         sys.argv = original_argv
     if args.command != "create" or args.job_type != "train" or args.train_launcher != "raw" or args.nnodes < 2:
         raise SystemExit("仅支持多节点 Slime train/raw 任务")
-    run_create(args, sdk, dry_run=dry_run)
+    run_create(
+        args,
+        sdk,
+        dry_run=dry_run,
+        force_host_network=os.environ.get("SLIME_FORCE_HOST_NETWORK") == "1",
+    )
 
 
 if __name__ == "__main__":
