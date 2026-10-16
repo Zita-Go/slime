@@ -92,10 +92,10 @@ class TerminalToolAgent:
         self.system_prompt = SYSTEM_PROMPT.replace("/app", workdir)
         self.bash_tool = copy.deepcopy(BASH_TOOL)
         self.bash_tool["function"]["parameters"]["properties"]["command"]["description"] = f"The shell command to execute. Each call starts in {workdir}. Use non-interactive commands."
-        self.max_turns = int(os.environ.get("TERMINAL_RL_MAX_TURNS", "100"))
+        self.max_turns = int(os.environ.get("TERMINAL_RL_MAX_TURNS", "400"))
         self.default_command_timeout = int(os.environ.get("TERMINAL_RL_COMMAND_TIMEOUT_SEC", "120"))
         self.max_tool_output_bytes = int(os.environ.get("TERMINAL_RL_MAX_TOOL_OUTPUT_BYTES", "32768"))
-        self.reasoning_effort = os.environ.get("TERMINAL_RL_REASONING_EFFORT", "medium").strip().lower()
+        self.reasoning_effort = os.environ.get("TERMINAL_RL_REASONING_EFFORT", "high").strip().lower()
         if self.max_turns <= 0:
             raise ValueError("TERMINAL_RL_MAX_TURNS must be positive")
         if not 1 <= self.default_command_timeout <= 600:

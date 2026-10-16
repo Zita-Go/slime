@@ -82,14 +82,19 @@ def _sample(package_dir: Path) -> Sample:
     )
 
 
-def test_training_agent_default_budget_is_two_hours(monkeypatch):
+def test_training_agent_defaults_are_four_hours_four_hundred_turns_and_high_reasoning(monkeypatch):
     monkeypatch.delenv("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", raising=False)
     monkeypatch.delenv("TERMINAL_RL_ROLLOUT_GUARD_SEC", raising=False)
+    monkeypatch.delenv("TERMINAL_RL_MAX_TURNS", raising=False)
+    monkeypatch.delenv("TERMINAL_RL_REASONING_EFFORT", raising=False)
     config = generate.TerminalConfig.from_env()
-    assert config.agent_time_budget_sec == 7200
+    agent = TerminalToolAgent()
+    assert config.agent_time_budget_sec == 14400
     assert config.rollout_guard_sec == (
-        7200 + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
+        14400 + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
     )
+    assert agent.max_turns == 400
+    assert agent.reasoning_effort == "high"
 
 
 def _patch_rollout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grade: dict) -> FakeTokenizer:
@@ -167,7 +172,7 @@ def test_terminal_generate_closes_agent_loop_and_uses_partial_reward(tmp_path: P
         assert all(sum(sample.loss_mask or []) > 0 for sample in samples)
         assert all(sample.metadata["verifier_verdict"] == "NON_EQUAL" for sample in samples)
         assert all(sample.metadata["agent_exit_code"] == 0 for sample in samples)
-        assert tokenizer.template_kwargs == [{"reasoning_effort": "medium"}]
+        assert tokenizer.template_kwargs == [{"reasoning_effort": "high"}]
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         asyncio.run(run_case(monkeypatch))

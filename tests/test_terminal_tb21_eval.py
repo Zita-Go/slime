@@ -330,7 +330,20 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         RUN_ROOT=str(tmp_path / "run"),
         LOAD_PATH=str(ref) if resume else "",
     )
-    for variable in ("SAVE_INTERVAL", "NUM_ROLLOUT", "EVAL_INTERVAL", "USE_TENSORBOARD", "ENABLE_TB21_EVAL", "TENSORBOARD_DIR", "TB21_EVAL_MODE", "MOE_DISPATCHER"):
+    for variable in (
+        "SAVE_INTERVAL",
+        "NUM_ROLLOUT",
+        "EVAL_INTERVAL",
+        "USE_TENSORBOARD",
+        "ENABLE_TB21_EVAL",
+        "TENSORBOARD_DIR",
+        "TB21_EVAL_MODE",
+        "MOE_DISPATCHER",
+        "MAX_GEN_LEN",
+        "TERMINAL_RL_AGENT_TIME_BUDGET_SEC",
+        "TERMINAL_RL_MAX_TURNS",
+        "TERMINAL_RL_REASONING_EFFORT",
+    ):
         env.pop(variable, None)
     env.update(SGLANG_SERVER_CONCURRENCY="8" if variant == "rollout8" else "4", MAX_TOKENS_PER_GPU="16384" if variant == "pack16k" else "8192", MOE_DISPATCHER="deepep" if variant == "deepep" else "alltoall")
     result = subprocess.run(["bash", str(ROOT / "examples/terminal_agent_rl/run_nex_n25_mini.sh")], env=env, capture_output=True, text=True)
@@ -351,9 +364,12 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TENSORBOARD_DIR"] == str(tmp_path / "run/tensorboard")
     assert runtime["env_vars"]["TB21_EVAL_OUTPUT"] == str(tmp_path / "run/tb21-eval")
     assert "TB21_EVAL_QUEUE" in runtime["env_vars"]
-    assert runtime["env_vars"]["TERMINAL_RL_AGENT_TIME_BUDGET_SEC"] == "7200"
+    assert runtime["env_vars"]["TERMINAL_RL_AGENT_TIME_BUDGET_SEC"] == "14400"
+    assert runtime["env_vars"]["TERMINAL_RL_MAX_TURNS"] == "400"
+    assert runtime["env_vars"]["TERMINAL_RL_REASONING_EFFORT"] == "high"
     assert runtime["env_vars"]["TB21_AGENT_TIME_BUDGET_SEC"] == "21600"
     assert runtime["env_vars"]["TB21_TRIAL_TIMEOUT_SEC"] == "32400"
+    assert argv[argv.index("--rollout-max-response-len") + 1] == "32768"
     assert argv[argv.index("--sglang-server-concurrency") + 1] == env["SGLANG_SERVER_CONCURRENCY"]
     assert argv[argv.index("--max-tokens-per-gpu") + 1] == env["MAX_TOKENS_PER_GPU"]
     dispatchers = [argv[i + 1] for i, value in enumerate(argv) if value == "--moe-token-dispatcher-type"]

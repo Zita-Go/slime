@@ -41,7 +41,7 @@ class TerminalConfig:
 
     @classmethod
     def from_env(cls) -> TerminalConfig:
-        agent_budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "7200"))
+        agent_budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "14400"))
         guard = int(os.environ.get("TERMINAL_RL_ROLLOUT_GUARD_SEC", "0") or 0)
         if guard <= 0:
             guard = agent_budget + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300

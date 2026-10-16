@@ -28,7 +28,7 @@ GPU训练使用 `RL/vendor/nextask-runtime-py313/bin/python` 运行bridge。该P
 
 Ray job入口使用Slime仓库的绝对`train.py`路径。driver默认继承Ray服务工作目录，提交客户端的`cd`不会改变driver工作目录；源码通过runtime env中的`PYTHONPATH`从共享仓库加载。
 
-训练rollout的单题Agent做题预算默认是 `TERMINAL_RL_AGENT_TIME_BUDGET_SEC=7200`（2小时），最大轮数仍为100。外层rollout guard默认再加workspace、判题和清理余量，因此不会在Agent预算耗尽前截断；TB2.1评测使用独立的6小时预算，不受此值控制。
+训练rollout的单题Agent做题预算默认是 `TERMINAL_RL_AGENT_TIME_BUDGET_SEC=14400`（4小时），最大轮数为400，单轮最大输出32768 token。`TERMINAL_RL_REASONING_EFFORT=high`是当前Nex-N2.5-mini模板支持的最高档，并生成`<think>\n`前缀。外层rollout guard默认再加workspace、判题和清理余量，因此不会在Agent预算耗尽前截断；TB2.1评测使用独立的6小时预算，不受训练时间值控制。32K输出会提高生成量和训练显存峰值，长程使用前必须通过独立单步资格测试。
 
 `TRAINING_PHASE=smoke` 默认三步、每步保存checkpoint；`TRAINING_PHASE=long`（默认）每5步存盘、每5步评测完整TB2.1。当前每个rollout只做一次优化，因此这里的step是参数更新而非microbatch。框架在末次rollout/epoch边界还可能额外保存恢复点；保存成功仍需核验模型、optimizer和数据进度元数据，目录存在本身不代表可恢复。
 
