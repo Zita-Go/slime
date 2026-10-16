@@ -5,7 +5,7 @@
 - TB2.1 全部89题只用于评测，不从NexTask训练集划分验证集。
 - 固定官方registry版本 `terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a`。
 - 使用Harbor 0.21.0原生Task/Trial/verifier与既有E2B环境适配，绝不调用NexTask pairwise verifier，也不把solution/tests加入模型prompt。
-- 复用训练的TerminalToolAgent（bash工具、系统提示、上下文及预算），只把公开任务指令替换为TB2.1 instruction；这是TB2.1任务上的本项目harness分数，不冒充官方其他Agent的leaderboard结果。
+- 复用训练的TerminalToolAgent、bash工具、系统提示和上下文机制，只把公开任务指令替换为TB2.1 instruction；评测预算单独配置。这是TB2.1任务上的本项目harness分数，不冒充官方其他Agent的leaderboard结果。
 - TB2.1单题做题预算独立于RL采样，默认 `TB21_AGENT_TIME_BUDGET_SEC=21600`（6小时）；Harbor看门狗额外保留60秒收尾。整题墙钟默认32400秒，覆盖E2B创建、Agent、原生verifier及清理，且必须严格大于Agent看门狗。
 
 ## 接入方式

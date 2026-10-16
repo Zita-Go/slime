@@ -82,6 +82,16 @@ def _sample(package_dir: Path) -> Sample:
     )
 
 
+def test_training_agent_default_budget_is_two_hours(monkeypatch):
+    monkeypatch.delenv("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", raising=False)
+    monkeypatch.delenv("TERMINAL_RL_ROLLOUT_GUARD_SEC", raising=False)
+    config = generate.TerminalConfig.from_env()
+    assert config.agent_time_budget_sec == 7200
+    assert config.rollout_guard_sec == (
+        7200 + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
+    )
+
+
 def _patch_rollout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grade: dict) -> FakeTokenizer:
     tokenizer = FakeTokenizer()
     monkeypatch.setattr(

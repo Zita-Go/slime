@@ -351,7 +351,7 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TENSORBOARD_DIR"] == str(tmp_path / "run/tensorboard")
     assert runtime["env_vars"]["TB21_EVAL_OUTPUT"] == str(tmp_path / "run/tb21-eval")
     assert "TB21_EVAL_QUEUE" in runtime["env_vars"]
-    assert runtime["env_vars"]["TERMINAL_RL_AGENT_TIME_BUDGET_SEC"] == "1800"
+    assert runtime["env_vars"]["TERMINAL_RL_AGENT_TIME_BUDGET_SEC"] == "7200"
     assert runtime["env_vars"]["TB21_AGENT_TIME_BUDGET_SEC"] == "21600"
     assert runtime["env_vars"]["TB21_TRIAL_TIMEOUT_SEC"] == "32400"
     assert argv[argv.index("--sglang-server-concurrency") + 1] == env["SGLANG_SERVER_CONCURRENCY"]
