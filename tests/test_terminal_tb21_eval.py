@@ -21,7 +21,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from examples.terminal_agent_rl import tb21_dataset, tb21_eval, tb21_queue, tb21_worker  # noqa: E402
+from examples.terminal_agent_rl import tb21_dataset, tb21_eval, tb21_queue, tb21_timeouts, tb21_worker  # noqa: E402
 from examples.terminal_agent_rl.agent import BASH_TOOL, SYSTEM_PROMPT, TerminalToolAgent  # noqa: E402
 from slime.utils.eval_config import build_eval_dataset_configs  # noqa: E402
 from slime.utils.misc import should_run_periodic_action  # noqa: E402
@@ -188,6 +188,23 @@ def test_eval_hook_cannot_be_used_for_training():
         tb21_eval.evaluate(SimpleNamespace(), 0, None, evaluation=False)
 
 
+def test_tb21_timeout_defaults_are_six_hour_agent_and_nine_hour_trial(monkeypatch):
+    monkeypatch.delenv("TB21_AGENT_TIME_BUDGET_SEC", raising=False)
+    monkeypatch.delenv("TB21_TRIAL_TIMEOUT_SEC", raising=False)
+    assert tb21_timeouts.agent_time_budget_sec() == 21600
+    assert tb21_timeouts.harbor_agent_timeout_sec() == 21660
+    assert tb21_timeouts.trial_timeout_sec() == 32400
+
+
+def test_tb21_timeout_override_must_leave_room_for_harbor_cleanup(monkeypatch):
+    monkeypatch.setenv("TB21_AGENT_TIME_BUDGET_SEC", "99")
+    monkeypatch.setenv("TB21_TRIAL_TIMEOUT_SEC", "159")
+    with pytest.raises(ValueError, match="must exceed"):
+        tb21_timeouts.trial_timeout_sec()
+    monkeypatch.setenv("TB21_TRIAL_TIMEOUT_SEC", "160")
+    assert tb21_timeouts.trial_timeout_sec() == 160
+
+
 def test_epoch_boundary_does_not_trigger_extra_tb21_run():
     output = tb21_eval.evaluate(SimpleNamespace(eval_interval=5), 16, None, evaluation=True)
     assert output.data == {}
@@ -334,6 +351,9 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TENSORBOARD_DIR"] == str(tmp_path / "run/tensorboard")
     assert runtime["env_vars"]["TB21_EVAL_OUTPUT"] == str(tmp_path / "run/tb21-eval")
     assert "TB21_EVAL_QUEUE" in runtime["env_vars"]
+    assert runtime["env_vars"]["TERMINAL_RL_AGENT_TIME_BUDGET_SEC"] == "1800"
+    assert runtime["env_vars"]["TB21_AGENT_TIME_BUDGET_SEC"] == "21600"
+    assert runtime["env_vars"]["TB21_TRIAL_TIMEOUT_SEC"] == "32400"
     assert argv[argv.index("--sglang-server-concurrency") + 1] == env["SGLANG_SERVER_CONCURRENCY"]
     assert argv[argv.index("--max-tokens-per-gpu") + 1] == env["MAX_TOKENS_PER_GPU"]
     dispatchers = [argv[i + 1] for i, value in enumerate(argv) if value == "--moe-token-dispatcher-type"]

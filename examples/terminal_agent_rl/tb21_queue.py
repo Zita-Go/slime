@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_QUEUE = "/gpfs/shared_data/zhangguoqiang/terminal-code/RL/tb21-eval-queue"
 BUDGET_KEYS = (
     "TERMINAL_RL_AGENT_TIME_BUDGET_SEC",
+    "TB21_AGENT_TIME_BUDGET_SEC",
+    "TB21_TRIAL_TIMEOUT_SEC",
     "TERMINAL_RL_MAX_TURNS",
     "TERMINAL_RL_REASONING_EFFORT",
     "SLIME_FORK_MERGE_MAX_RESPONSE_TOKENS",

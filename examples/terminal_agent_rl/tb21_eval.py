@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .e2b_network import e2b_subprocess_env
 from .tb21_dataset import COUNT, VERSION, validate_dataset
+from .tb21_timeouts import trial_timeout_sec
 
 
 def validate_receipt(receipt: dict) -> float:
@@ -61,7 +62,7 @@ async def _trial(row, config, output, state):
                 stdout=log,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            await asyncio.wait_for(process.wait(), timeout=int(os.environ.get("TB21_TRIAL_TIMEOUT_SEC", "7200")))
+            await asyncio.wait_for(process.wait(), timeout=trial_timeout_sec())
         if process.returncode:
             raise RuntimeError(f"TB2.1 trial failed ({row['label']}), see {output / 'runner.log'}")
         receipt = json.loads(receipt_path.read_text())

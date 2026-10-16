@@ -14,6 +14,7 @@ from harbor.agents.base import BaseAgent
 from nexau_harbor.e2b_environment import NexAUE2BEnvironment
 
 from .agent import PROMPT_PREFIX, TerminalToolAgent
+from .tb21_timeouts import agent_time_budget_sec, harbor_agent_timeout_sec
 
 
 class SlimeTerminalAgent(BaseAgent):
@@ -35,7 +36,7 @@ class SlimeTerminalAgent(BaseAgent):
             _HarborSandbox(environment),
             session_id=os.environ["TB21_ADAPTER_SESSION"],
             adapter_url=os.environ["TB21_ADAPTER_URL"],
-            time_budget_sec=int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "1800")),
+            time_budget_sec=agent_time_budget_sec(),
             prompt=PROMPT_PREFIX.replace("/app", str(workdir)) + instruction,
         )
         context.metadata = {
@@ -111,7 +112,7 @@ async def run_trial(options) -> None:
     configure_bridge_network()
     os.environ["TB21_ADAPTER_URL"] = options.adapter_url
     os.environ["TB21_ADAPTER_SESSION"] = options.session_id
-    budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "1800"))
+    budget = agent_time_budget_sec()
     config = TrialConfig(
         task=TaskConfig(path=options.task_dir),
         trial_name="trial",
@@ -119,7 +120,7 @@ async def run_trial(options) -> None:
         agent=AgentConfig(
             import_path="examples.terminal_agent_rl.tb21_harbor:SlimeTerminalAgent",
             model_name="slime-actor",
-            override_timeout_sec=budget + 60,
+            override_timeout_sec=harbor_agent_timeout_sec(budget),
         ),
         environment=EnvironmentConfig(
             import_path="examples.terminal_agent_rl.tb21_harbor:AuditedE2BEnvironment",
