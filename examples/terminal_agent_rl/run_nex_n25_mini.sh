@@ -14,6 +14,11 @@ NEXTASK_RUNTIME_PYTHON=${NEXTASK_RUNTIME_PYTHON:-/gpfs/users/i-zhangguoqiang/ter
 TERMINAL_RL_E2B_CONFIG_FILE=${TERMINAL_RL_E2B_CONFIG_FILE:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/.secrets/nextask-e2b.json}
 E2B_VENDOR_DIR=${E2B_VENDOR_DIR:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/vendor/e2b-2.21.0}
 TERMINAL_RL_E2B_PROXY=${TERMINAL_RL_E2B_PROXY-http://10.51.6.27:5023}
+TERMINAL_RL_AGENT=${TERMINAL_RL_AGENT:-claude_code}
+SLIME_AGENT_NODE_TARBALL=${SLIME_AGENT_NODE_TARBALL:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/vendor/claude-code-2.1.193/node-v20.19.5-linux-x64.tar.gz}
+SLIME_AGENT_CC_TARBALL=${SLIME_AGENT_CC_TARBALL:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/vendor/claude-code-2.1.193/anthropic-ai-claude-code-2.1.193.tgz}
+EXPECTED_NODE_TARBALL_SHA256=${EXPECTED_NODE_TARBALL_SHA256:-4eba5fbe1fb10753bc06e42f001a91c5cec16798b7764a3e9257adc59af47fe1}
+EXPECTED_CC_TARBALL_SHA256=${EXPECTED_CC_TARBALL_SHA256:-fc0cdf116ef64ee80259a6a71bc96070e116e2583abf6b129cf38fa61fb4967a}
 
 EXPECTED_NEXTASK_COMMIT=${EXPECTED_NEXTASK_COMMIT:-7f746b9832fcedbab4904fdd39d200aab3120ec7}
 EXPECTED_NEXAU_COMMIT=${EXPECTED_NEXAU_COMMIT:-4e95828aa9a8c33e5b478e465557351aecfa3d88}
@@ -76,6 +81,13 @@ die() {
 [[ "$USE_TENSORBOARD" =~ ^[01]$ && "$ENABLE_TB21_EVAL" =~ ^[01]$ ]] || die "监测/评测开关必须是0或1"
 [[ "$TB21_EVAL_MODE" == async || "$TB21_EVAL_MODE" == sync ]] || die "TB21_EVAL_MODE 必须为async/sync"
 [[ "$MOE_DISPATCHER" == alltoall || "$MOE_DISPATCHER" == deepep ]] || die "MOE_DISPATCHER 必须为alltoall/deepep"
+[[ "$TERMINAL_RL_AGENT" == claude_code || "$TERMINAL_RL_AGENT" == terminal_tool ]] || die "TERMINAL_RL_AGENT 必须为claude_code/terminal_tool"
+if [[ "$TERMINAL_RL_AGENT" == claude_code ]]; then
+    [[ -f "$SLIME_AGENT_NODE_TARBALL" && ! -L "$SLIME_AGENT_NODE_TARBALL" ]] || die "固定Node包不存在或为符号链接"
+    [[ -f "$SLIME_AGENT_CC_TARBALL" && ! -L "$SLIME_AGENT_CC_TARBALL" ]] || die "固定Claude Code包不存在或为符号链接"
+    [[ $(sha256sum "$SLIME_AGENT_NODE_TARBALL" | awk '{print $1}') == "$EXPECTED_NODE_TARBALL_SHA256" ]] || die "固定Node包SHA漂移"
+    [[ $(sha256sum "$SLIME_AGENT_CC_TARBALL" | awk '{print $1}') == "$EXPECTED_CC_TARBALL_SHA256" ]] || die "固定Claude Code包SHA漂移"
+fi
 
 TRACKING_ARGS=()
 if [[ "$USE_TENSORBOARD" == 1 ]]; then
@@ -260,6 +272,11 @@ export TERMINAL_RL_GRADE_TIMEOUT_SEC=${TERMINAL_RL_GRADE_TIMEOUT_SEC:-2400}
 export TERMINAL_RL_BOOT_CONCURRENCY=${TERMINAL_RL_BOOT_CONCURRENCY:-16}
 export TERMINAL_RL_MAX_TURNS=${TERMINAL_RL_MAX_TURNS:-400}
 export TERMINAL_RL_REASONING_EFFORT=${TERMINAL_RL_REASONING_EFFORT:-high}
+export TERMINAL_RL_AGENT SLIME_AGENT_NODE_TARBALL SLIME_AGENT_CC_TARBALL
+CC_SETTINGS_JSON='{"permissions":{"defaultMode":"bypassPermissions"},"autoCompactEnabled":true,"autoCompactWindow":196608}'
+CC_AGENTS_JSON='{"worker":{"description":"Handle a delegated terminal subtask and report concrete results","prompt":"Work on the delegated subtask inside the current sandbox. Inspect and modify the environment as needed, run relevant checks, and return a concise evidence-based result.","tools":["Read","Edit","Write","Grep","Glob","Bash"]}}'
+export SLIME_AGENT_CC_EXTRA_ARGS=${SLIME_AGENT_CC_EXTRA_ARGS:-"--settings '$CC_SETTINGS_JSON' --disable-slash-commands --agents '$CC_AGENTS_JSON' --disallowedTools WebFetch WebSearch"}
+export SLIME_AGENT_CC_EXTRA_ENVS=${SLIME_AGENT_CC_EXTRA_ENVS:-'{"MAX_THINKING_TOKENS":"64000"}'}
 export TB21_AGENT_TIME_BUDGET_SEC=${TB21_AGENT_TIME_BUDGET_SEC:-21600}
 [[ "$TB21_AGENT_TIME_BUDGET_SEC" =~ ^[1-9][0-9]*$ ]] || { echo "TB21_AGENT_TIME_BUDGET_SEC必须为正整数" >&2; exit 2; }
 export TB21_TRIAL_TIMEOUT_SEC=${TB21_TRIAL_TIMEOUT_SEC:-$((TB21_AGENT_TIME_BUDGET_SEC + 10800))}
@@ -272,7 +289,6 @@ export TB21_MAX_TURNS=${TB21_MAX_TURNS:-100000}
 [[ "$TB21_MAX_TURNS" =~ ^[1-9][0-9]*$ ]] || { echo "TB21_MAX_TURNS必须为正整数" >&2; exit 2; }
 export TB21_REASONING_EFFORT=${TB21_REASONING_EFFORT:-high}
 [[ "$TB21_REASONING_EFFORT" == high ]] || { echo "TB21_REASONING_EFFORT必须为high" >&2; exit 2; }
-export ADAPTER_BIND_HOST=127.0.0.1
 export ADAPTER_PORT=0
 export TB21_RUNTIME_PYTHON TB21_CONCURRENCY
 
@@ -280,7 +296,14 @@ export MASTER_ADDR=${MASTER_ADDR:?NorthJob 未设置 MASTER_ADDR}
 export MASTER_PORT=${MASTER_PORT:-6379}
 export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-${MLP_SOCKET_IFNAME:-eth0}}
 export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-${MLP_SOCKET_IFNAME:-eth0}}
-export no_proxy="127.0.0.1,${MASTER_ADDR}${no_proxy:+,$no_proxy}"
+if [[ "$TERMINAL_RL_AGENT" == claude_code ]]; then
+    export ADAPTER_BIND_HOST=${ADAPTER_BIND_HOST:-0.0.0.0}
+    export ADAPTER_PUBLIC_HOST=${ADAPTER_PUBLIC_HOST:-$(hostname -I | awk '{print $1}')}
+    [[ -n "$ADAPTER_PUBLIC_HOST" && "$ADAPTER_PUBLIC_HOST" != 127.0.0.1 ]] || die "Claude Code需要E2B可达的ADAPTER_PUBLIC_HOST"
+else
+    export ADAPTER_BIND_HOST=${ADAPTER_BIND_HOST:-127.0.0.1}
+fi
+export no_proxy="127.0.0.1,${MASTER_ADDR}${ADAPTER_PUBLIC_HOST:+,$ADAPTER_PUBLIC_HOST}${no_proxy:+,$no_proxy}"
 export NO_PROXY="$no_proxy"
 
 RUNTIME_ENV_JSON=$(python3 - <<'PY'
@@ -293,6 +316,11 @@ keys = (
     "TERMINAL_RL_E2B_CONFIG_FILE",
     "E2B_VENDOR_DIR",
     "TERMINAL_RL_E2B_PROXY",
+    "TERMINAL_RL_AGENT",
+    "SLIME_AGENT_NODE_TARBALL",
+    "SLIME_AGENT_CC_TARBALL",
+    "SLIME_AGENT_CC_EXTRA_ARGS",
+    "SLIME_AGENT_CC_EXTRA_ENVS",
     "TERMINAL_RL_VERIFIER_WORK_ROOT",
     "TERMINAL_RL_AGENT_TIME_BUDGET_SEC",
     "TERMINAL_RL_WORKSPACE_TIMEOUT_SEC",
@@ -310,6 +338,7 @@ keys = (
     "TB21_EVAL_OUTPUT",
     "TB21_EVAL_QUEUE",
     "ADAPTER_BIND_HOST",
+    "ADAPTER_PUBLIC_HOST",
     "ADAPTER_PORT",
     "MASTER_ADDR",
     "MASTER_PORT",

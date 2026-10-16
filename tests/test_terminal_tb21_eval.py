@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import math
@@ -328,6 +329,10 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     config.chmod(0o600)
     data = tmp_path / "train.jsonl"
     data.touch()
+    node_tarball = tmp_path / "node.tar.gz"
+    cc_tarball = tmp_path / "claude-code.tgz"
+    node_tarball.write_bytes(b"fixed-node")
+    cc_tarball.write_bytes(b"fixed-claude-code")
     env = dict(
         os.environ,
         PATH=f"{mockbin}:{os.environ['PATH']}",
@@ -344,6 +349,12 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         MASTER_ADDR="127.0.0.1",
         RUN_ROOT=str(tmp_path / "run"),
         LOAD_PATH=str(ref) if resume else "",
+        TERMINAL_RL_AGENT="claude_code",
+        SLIME_AGENT_NODE_TARBALL=str(node_tarball),
+        SLIME_AGENT_CC_TARBALL=str(cc_tarball),
+        EXPECTED_NODE_TARBALL_SHA256=hashlib.sha256(node_tarball.read_bytes()).hexdigest(),
+        EXPECTED_CC_TARBALL_SHA256=hashlib.sha256(cc_tarball.read_bytes()).hexdigest(),
+        ADAPTER_PUBLIC_HOST="192.0.2.1",
     )
     for variable in (
         "SAVE_INTERVAL",
@@ -384,6 +395,12 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TERMINAL_RL_AGENT_TIME_BUDGET_SEC"] == "14400"
     assert runtime["env_vars"]["TERMINAL_RL_MAX_TURNS"] == "400"
     assert runtime["env_vars"]["TERMINAL_RL_REASONING_EFFORT"] == "high"
+    assert runtime["env_vars"]["TERMINAL_RL_AGENT"] == "claude_code"
+    assert runtime["env_vars"]["ADAPTER_BIND_HOST"] == "0.0.0.0"
+    assert runtime["env_vars"]["ADAPTER_PUBLIC_HOST"] == "192.0.2.1"
+    assert runtime["env_vars"]["SLIME_AGENT_NODE_TARBALL"] == str(node_tarball)
+    assert runtime["env_vars"]["SLIME_AGENT_CC_TARBALL"] == str(cc_tarball)
+    assert "autoCompactWindow" in runtime["env_vars"]["SLIME_AGENT_CC_EXTRA_ARGS"]
     assert runtime["env_vars"]["TB21_AGENT_TIME_BUDGET_SEC"] == "21600"
     assert runtime["env_vars"]["TB21_TRIAL_TIMEOUT_SEC"] == "32400"
     assert runtime["env_vars"]["TB21_MAX_TURNS"] == "100000"

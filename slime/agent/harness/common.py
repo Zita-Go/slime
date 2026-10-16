@@ -104,14 +104,22 @@ class BaseHarness(ABC, metaclass=SingletonABCMeta):
         return await self.launch_and_wait(sb, ctx, prompt, time_budget_sec)
 
 
-async def run_agent(sb: Sandbox, *, workdir: str, start_cmd: str, env: dict[str, str], time_budget_sec: int) -> int:
+async def run_agent(
+    sb: Sandbox,
+    *,
+    workdir: str,
+    start_cmd: str,
+    env: dict[str, str],
+    time_budget_sec: int,
+    user: str = "agent",
+) -> int:
     """Launch the agent (start_cmd) and run it to completion, returning its exit code."""
     meta_dir = f"{workdir}/.harness"
     await sb.exec(f"mkdir -p {meta_dir} && chown agent:agent {meta_dir}", user="root", check=True, timeout=30)
     exit_code, _ = await exec_and_wait(
         sb,
         cmd=start_cmd,
-        user="agent",
+        user=user,
         env=env,
         workdir=workdir,
         out_file=f"{meta_dir}/trajectory.jsonl",

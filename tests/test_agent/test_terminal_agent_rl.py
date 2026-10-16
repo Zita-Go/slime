@@ -11,6 +11,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,7 @@ if not hasattr(asyncio, "timeout"):
 import examples.terminal_agent_rl.bridge as bridge  # noqa: E402
 import examples.terminal_agent_rl.generate as generate  # noqa: E402
 from examples.terminal_agent_rl.agent import TerminalToolAgent  # noqa: E402
+from examples.terminal_agent_rl.claude_code import RootClaudeCodeHarness  # noqa: E402
 from examples.terminal_agent_rl.e2b_config import resolve_e2b_connection  # noqa: E402
 from examples.terminal_agent_rl.sandbox import NextaskE2BSandbox  # noqa: E402
 from examples.terminal_agent_rl import runtime  # noqa: E402
@@ -82,13 +84,18 @@ def _sample(package_dir: Path) -> Sample:
     )
 
 
-def test_training_agent_defaults_are_four_hours_four_hundred_turns_and_high_reasoning(monkeypatch):
+def test_training_defaults_select_claude_code_with_four_hour_budget(monkeypatch):
+    monkeypatch.delenv("TERMINAL_RL_AGENT", raising=False)
+    monkeypatch.delenv("ADAPTER_PUBLIC_HOST", raising=False)
     monkeypatch.delenv("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", raising=False)
     monkeypatch.delenv("TERMINAL_RL_ROLLOUT_GUARD_SEC", raising=False)
     monkeypatch.delenv("TERMINAL_RL_MAX_TURNS", raising=False)
     monkeypatch.delenv("TERMINAL_RL_REASONING_EFFORT", raising=False)
     config = generate.TerminalConfig.from_env()
     agent = TerminalToolAgent()
+    assert config.agent_name == "claude_code"
+    assert config.adapter_public_host is None
+    assert config.adapter_bind_host == "0.0.0.0"
     assert config.agent_time_budget_sec == 14400
     assert config.rollout_guard_sec == (
         14400 + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
@@ -104,6 +111,8 @@ def _patch_rollout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grade: dict)
         "CONFIG",
         dataclasses.replace(
             generate.CONFIG,
+            agent_name="terminal_tool",
+            adapter_public_host=None,
             adapter_bind_host="127.0.0.1",
             adapter_port=0,
             rollout_guard_sec=60,
@@ -176,6 +185,90 @@ def test_terminal_generate_closes_agent_loop_and_uses_partial_reward(tmp_path: P
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         asyncio.run(run_case(monkeypatch))
+
+
+def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    grade = {
+        "ok": True,
+        "verdict": "NON_EQUAL",
+        "score_ratio": 0.5,
+        "candidate_snapshot_cleanup_confirmed": True,
+    }
+
+    async def install_cli(_self, sandbox):
+        sandbox.claude_code_installed = True
+
+    async def run_claude(_self, sandbox, *, session_id, adapter_url, **_kwargs):
+        assert sandbox.claude_code_installed is True
+        async with aiohttp.ClientSession() as client:
+            async with client.post(
+                f"{adapter_url}/v1/messages",
+                headers={"x-api-key": session_id},
+                json={
+                    "model": "slime-actor",
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": "solve the task"}],
+                },
+            ) as response:
+                payload = await response.json()
+        assert response.status == 200 and payload["type"] == "message"
+        return 0
+
+    async def run_case(monkeypatch: pytest.MonkeyPatch):
+        _patch_rollout(monkeypatch, tmp_path, grade)
+        monkeypatch.setattr(
+            generate,
+            "CONFIG",
+            dataclasses.replace(
+                generate.CONFIG,
+                agent_name="claude_code",
+                adapter_public_host="127.0.0.1",
+                adapter_bind_host="127.0.0.1",
+            ),
+        )
+        monkeypatch.setattr(type(generate._CLAUDE_CODE), "install_cli", install_cli)
+        monkeypatch.setattr(type(generate._CLAUDE_CODE), "run", run_claude)
+        SingletonMeta.clear_instances(generate._AdapterService)
+        samples = await generate.generate(_args(), _sample(package), {"max_tokens": 64})
+        assert samples and sum(float(sample.reward) for sample in samples) == pytest.approx(0.5)
+        assert all(sample.metadata["agent_harness"] == "claude_code" for sample in samples)
+        assert all(sample.metadata["agent_exit_code"] == 0 for sample in samples)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        asyncio.run(run_case(monkeypatch))
+
+
+def test_terminal_claude_code_runs_as_root(monkeypatch):
+    captured = {}
+
+    async def launched(env):
+        captured.update(env)
+        return 0
+
+    async def run_case():
+        sandbox = FakeSandbox(on_launch=launched)
+        harness = RootClaudeCodeHarness()
+        await harness.write_config(
+            sandbox,
+            SimpleNamespace(workdir="/app", session_id="session-root", adapter_url="http://adapter:18001", model_label="slime-actor"),
+        )
+        result = await harness.launch_and_wait(
+            sandbox,
+            SimpleNamespace(workdir="/app", session_id="session-root", adapter_url="http://adapter:18001", model_label="slime-actor"),
+            "solve",
+            30,
+        )
+        assert result == 0
+        assert any("/root/.claude/settings.json" in command and user == "root" for command, user in sandbox.exec_log)
+        launcher = next(value for path, value in sandbox.files.items() if path.endswith(".run.sh"))
+        assert "export HOME=/root" in launcher
+        assert captured["ANTHROPIC_BASE_URL"] == "http://adapter:18001"
+        assert captured["ANTHROPIC_AUTH_TOKEN"] == "session-root"
+
+    monkeypatch.setattr(sandbox_module.asyncio, "sleep", _fast_sleep)
+    asyncio.run(run_case())
 
 
 def test_terminal_generate_drops_indeterminate_verifier_result(tmp_path: Path) -> None:

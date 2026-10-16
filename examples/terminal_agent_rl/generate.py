@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from slime.agent.adapters import OpenAIAdapter
+from slime.agent.adapters import AnthropicAdapter, OpenAIAdapter
 from slime.agent.aiohttp_threaded import FilteredAccessLogger, run_app_in_thread
 from slime.utils.misc import SingletonMeta
 from slime.utils.processing_utils import load_tokenizer
@@ -23,6 +23,7 @@ from slime.utils.types import Sample
 
 from . import runtime
 from .agent import PROMPT_PREFIX, TerminalToolAgent
+from .claude_code import RootClaudeCodeHarness
 from .sandbox import NextaskE2BSandbox
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,8 @@ logging.getLogger("e2b").setLevel(logging.WARNING)
 
 @dataclass(frozen=True)
 class TerminalConfig:
+    agent_name: str
+    adapter_public_host: str | None
     adapter_bind_host: str
     adapter_port: int
     fork_merge_threshold: int | None
@@ -41,13 +44,20 @@ class TerminalConfig:
 
     @classmethod
     def from_env(cls) -> TerminalConfig:
+        agent_name = os.environ.get("TERMINAL_RL_AGENT", "claude_code").strip().lower()
+        if agent_name not in {"claude_code", "terminal_tool"}:
+            raise ValueError("TERMINAL_RL_AGENT must be claude_code or terminal_tool")
         agent_budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "14400"))
         guard = int(os.environ.get("TERMINAL_RL_ROLLOUT_GUARD_SEC", "0") or 0)
         if guard <= 0:
             guard = agent_budget + runtime.CONFIG.workspace_timeout_sec + runtime.CONFIG.grade_timeout_sec + 300
         fork = int(value) if (value := os.environ.get("SLIME_FORK_MERGE_MAX_RESPONSE_TOKENS")) else None
         return cls(
-            adapter_bind_host=os.environ.get("ADAPTER_BIND_HOST", "127.0.0.1"),
+            agent_name=agent_name,
+            adapter_public_host=os.environ.get("ADAPTER_PUBLIC_HOST") or None,
+            adapter_bind_host=os.environ.get(
+                "ADAPTER_BIND_HOST", "0.0.0.0" if agent_name == "claude_code" else "127.0.0.1"
+            ),
             adapter_port=int(os.environ.get("ADAPTER_PORT", "0")),
             fork_merge_threshold=fork,
             agent_time_budget_sec=agent_budget,
@@ -59,7 +69,8 @@ class TerminalConfig:
 
 CONFIG = TerminalConfig.from_env()
 _BOOT_SEM = asyncio.Semaphore(CONFIG.boot_concurrency)
-_AGENT = TerminalToolAgent()
+_TERMINAL_AGENT = TerminalToolAgent()
+_CLAUDE_CODE = RootClaudeCodeHarness()
 
 
 @asynccontextmanager
@@ -71,6 +82,12 @@ async def boot_task_sandbox(template_identity: str, item_id: str) -> AsyncIterat
         try:
             async with _BOOT_SEM:
                 await candidate.__aenter__()
+                try:
+                    if CONFIG.agent_name == "claude_code":
+                        await _CLAUDE_CODE.install_cli(candidate)
+                except BaseException:
+                    await candidate.__aexit__(None, None, None)
+                    raise
             sandbox = candidate
             break
         except Exception as exc:  # noqa: BLE001 - E2B transport errors are retried at this boundary
@@ -99,7 +116,12 @@ class _AdapterService(metaclass=SingletonMeta):
         self.tool_parser = getattr(args, "sglang_tool_call_parser", None) or None
         self.reasoning_parser = getattr(args, "sglang_reasoning_parser", None) or None
         sglang_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-        self.adapter = OpenAIAdapter(
+        adapter_cls = AnthropicAdapter if CONFIG.agent_name == "claude_code" else OpenAIAdapter
+        if CONFIG.agent_name == "claude_code" and not CONFIG.adapter_public_host:
+            raise RuntimeError(
+                "ADAPTER_PUBLIC_HOST is required for Claude Code because the E2B sandbox must reach the Anthropic adapter"
+            )
+        self.adapter = adapter_cls(
             tokenizer=self.tokenizer,
             sglang_url=sglang_url,
             tool_parser=self.tool_parser,
@@ -110,15 +132,17 @@ class _AdapterService(metaclass=SingletonMeta):
             self.adapter.app,
             host=CONFIG.adapter_bind_host,
             port=CONFIG.adapter_port,
-            thread_name="terminal-agent-openai-adapter",
+            thread_name=f"terminal-agent-{CONFIG.agent_name}-adapter",
             runner_kwargs={
                 "handler_cancellation": True,
                 "access_log_class": FilteredAccessLogger,
             },
         )
-        self.adapter_url = f"http://127.0.0.1:{self.app_handle.port}"
+        adapter_host = CONFIG.adapter_public_host if CONFIG.agent_name == "claude_code" else "127.0.0.1"
+        self.adapter_url = f"http://{adapter_host}:{self.app_handle.port}"
         logger.info(
-            "[terminal_agent_rl] tokenizer=%s adapter=%s context=%d tool_parser=%s reasoning_parser=%s",
+            "[terminal_agent_rl] harness=%s tokenizer=%s adapter=%s context=%d tool_parser=%s reasoning_parser=%s",
+            CONFIG.agent_name,
             args.hf_checkpoint,
             self.adapter_url,
             self.max_context_len,
@@ -209,14 +233,26 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                 if workspace.get("ok") is not True:
                     raise runtime.BridgeInvocationError(f"workspace materialization failed: {workspace!r}")
                 prompt = PROMPT_PREFIX + str(base_sample.prompt)
-                agent_result = await _AGENT.run(
-                    sandbox,
-                    session_id=session_id,
-                    adapter_url=state.adapter_url,
-                    time_budget_sec=CONFIG.agent_time_budget_sec,
-                    prompt=prompt,
-                )
-                agent_exit_code = agent_result.exit_code
+                if CONFIG.agent_name == "claude_code":
+                    agent_exit_code = await _CLAUDE_CODE.run(
+                        sandbox,
+                        workdir="/app",
+                        session_id=session_id,
+                        adapter_url=state.adapter_url,
+                        time_budget_sec=CONFIG.agent_time_budget_sec,
+                        prompt=prompt,
+                    )
+                    agent_turns = None
+                else:
+                    agent_result = await _TERMINAL_AGENT.run(
+                        sandbox,
+                        session_id=session_id,
+                        adapter_url=state.adapter_url,
+                        time_budget_sec=CONFIG.agent_time_budget_sec,
+                        prompt=prompt,
+                    )
+                    agent_exit_code = agent_result.exit_code
+                    agent_turns = agent_result.turns
                 grade = await runtime.grade_sandbox(
                     sandbox_id=sandbox.sandbox_id,
                     package_dir=metadata["package_dir"],
@@ -249,6 +285,7 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                     "verifier_score": grade.get("score"),
                     "verifier_max_score": grade.get("max_score"),
                     "verifier_score_ratio": grade.get("score_ratio"),
+                    "agent_harness": CONFIG.agent_name,
                 },
             )
             if not samples:
@@ -258,7 +295,8 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                 sample.metadata = {
                     **(sample.metadata or {}),
                     "agent_exit_code": agent_exit_code,
-                    "agent_turns": agent_result.turns,
+                    "agent_turns": agent_turns,
+                    "agent_harness": CONFIG.agent_name,
                     "terminal_rollout_elapsed_s": elapsed,
                 }
             logger.info(
@@ -330,6 +368,7 @@ def _eval_result(
         **(sample.metadata or {}),
         "item_id": item_id,
         "agent_exit_code": agent_exit_code,
+        "agent_harness": CONFIG.agent_name,
         "grading_solved": reward == 1.0,
         "verifier_verdict": grade.get("verdict"),
         "verifier_score_ratio": grade.get("score_ratio"),

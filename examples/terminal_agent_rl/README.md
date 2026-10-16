@@ -1,6 +1,6 @@
 # NexTask Terminal-Agent RL
 
-本目录把 NexTask RFC-0012 v3 动态题包接入 slime。训练时，rollout worker 在本地运行多轮 agent loop，模型通过 `bash` 工具操作每题独立的 E2B 模板；结束后由冻结的 NexTask runtime 创建候选快照，并使用题包自带的 shell-pairwise verifier 与参考快照比较。
+本目录把 NexTask RFC-0012 v3 动态题包接入 slime。正式训练默认在每题独立E2B模板内运行固定Claude Code 2.1.193，CC通过AnthropicAdapter调用当前SGLang策略模型并使用其原生工具/子Agent/自动压缩；结束后由冻结的NexTask runtime创建候选快照，并使用题包自带的shell-pairwise verifier与参考快照比较。轻量TerminalToolAgent仅保留为显式诊断回退。
 
 基础设施失败产生ABORTED结果时，fully-async会把整组放回buffer。一条原始采样可含多个训练段，因此恢复入口按Sample叶子处理会话和生成，只恢复未完成段；默认已完成段的token、mask、logprob和reward保持，partial模式仍沿用既有off-policy mask规则，外层n个独立采样槽不展平。Terminal重试必须新建session ID，保留旧会话的closed保护，避免迟到请求串入重试或收到HTTP503。修复源码不会热重载到已运行的RolloutManager；下一次正常启动生效，不为应用补丁中断当前训练。
 
@@ -28,7 +28,7 @@ GPU训练使用 `RL/vendor/nextask-runtime-py313/bin/python` 运行bridge。该P
 
 Ray job入口使用Slime仓库的绝对`train.py`路径。driver默认继承Ray服务工作目录，提交客户端的`cd`不会改变driver工作目录；源码通过runtime env中的`PYTHONPATH`从共享仓库加载。
 
-训练rollout的单题Agent做题预算默认是 `TERMINAL_RL_AGENT_TIME_BUDGET_SEC=14400`（4小时），最大轮数为400，单轮最大输出32768 token。`TERMINAL_RL_REASONING_EFFORT=high`是当前Nex-N2.5-mini模板支持的最高档，并生成`<think>\n`前缀。外层rollout guard默认再加workspace、判题和清理余量，因此不会在Agent预算耗尽前截断；TB2.1评测使用独立的6小时预算，不受训练时间值控制。32K输出会提高生成量和训练显存峰值，长程使用前必须通过独立单步资格测试。
+训练rollout的单题Agent做题预算默认是 `TERMINAL_RL_AGENT_TIME_BUDGET_SEC=14400`（4小时），单轮最大输出32768 token。CC最大thinking为64000，并在196608 token触发原生auto-compaction；外层rollout guard默认再加workspace、判题和清理余量，因此不会在Agent预算耗尽前截断。32K输出会提高生成量和训练显存峰值，长程使用前必须通过独立单步资格测试。固定Node/CC包和网络门槛见[RFC](RFC-claude-code-harness.md)。
 
 `TRAINING_PHASE=smoke` 默认三步、每步保存checkpoint；`TRAINING_PHASE=long`（默认）每5步存盘、每5步评测完整TB2.1。当前每个rollout只做一次优化，因此这里的step是参数更新而非microbatch。框架在末次rollout/epoch边界还可能额外保存恢复点；保存成功仍需核验模型、optimizer和数据进度元数据，目录存在本身不代表可恢复。
 
@@ -44,9 +44,9 @@ tensorboard --logdir /绝对路径/RUN/tensorboard --host 127.0.0.1 --port 6006
 
 默认评测配置为[tb21_eval.yaml](tb21_eval.yaml)：固定TB2.1全部89题、每题1次，直接使用其测试集，不从训练题库另外拆分验证集。指标`eval/tb21`是原生二元reward的89题均分；`train/loss`、`train/grad_norm`、rollout reward等由已有Slime日志接口记录。反复据测试集调参后的结果属于内部开发评测，不能当成完全未接触测试集的最终泛化成绩。
 
-TB2.1使用Harbor 0.21.0的Task/Trial/原生verifier和独立E2B环境，不调用NexTask pairwise verifier。Agent仍是训练的TerminalToolAgent/bash；仅工作目录按原生任务Dockerfile调整，原始测试不改。结果应标注`slime-terminal-bash` harness，不冒充其他官方Agent的leaderboard数字。tests/solution仅留在host task包中，由Harbor在正确阶段处理；模型prompt只有公开instruction。
+TB2.1使用Harbor 0.21.0的Task/Trial/原生verifier和独立E2B环境，不调用NexTask pairwise verifier。当前评测入口仍是`slime-terminal-bash`，尚未随训练迁移到CC；两种Harness的结果必须分开标注。tests/solution仅留在host task包中，由Harbor在正确阶段处理；模型prompt只有公开instruction。
 
-TB2.1评测对齐step90的可移植参数：6小时Agent、temperature1.0/top_p0.95/top_k20、high reasoning、单轮65536 token及评测专用100000轮失控上限；Agent setup为3600秒、verifier为1800秒、环境构建为600秒，E2B keepalive最长24小时。Claude Code在196608 token触发的语义摘要压缩尚未在TerminalToolAgent中实现，prefix merging只处理训练轨迹表示，不能缩短实际推理prompt；在单独实现并验收前不以丢弃旧消息替代。
+TB2.1旧Harness的参数已对齐step90可移植数值，但这不等于CC Harness对齐；后续须复用同一ClaudeCodeHarness/AnthropicAdapter并独立验收后再替换评测入口。
 
 默认`TB21_EVAL_MODE=async`：每5更新仅提交固定checkpoint请求，不等待89题完成。`TB21_EVAL_QUEUE`默认指向共享盘`RL/tb21-eval-queue`。额外单机8H100运行4个TP2实例，每实例5题，总并发20；worker不加入训练Ray，不连接训练推理服务。独立Pod使用与训练相同的保护E2B配置及专用代理、Harbor Python：
 

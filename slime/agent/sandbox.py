@@ -108,7 +108,8 @@ async def exec_and_wait(
     done_file = f"/tmp/.{tag}.done"
     launcher = f"/tmp/.{tag}.sh"
     lock_dir = f"/tmp/.{tag}.spawned"
-    prefix = f"cd {workdir}\nexport HOME=/home/{user}\n" if workdir else ""
+    home = "/root" if user == "root" else f"/home/{user}"
+    prefix = f"cd {workdir}\nexport HOME={home}\n" if workdir else ""
     launcher_body = f"#!/bin/bash\n{prefix}{cmd}\necho $? > {done_file}\n"
     await sb.write_file(launcher, launcher_body, user=user)
 
