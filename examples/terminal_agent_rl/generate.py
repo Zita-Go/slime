@@ -243,6 +243,7 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
     t0 = time.monotonic()
     grade: dict[str, Any] | None = None
     snapshot_cleanup_confirmed = False
+    claude_trajectory: str | None = None
     try:
         async with asyncio.timeout(CONFIG.rollout_guard_sec):
             async with boot_task_sandbox(str(metadata["template_identity"]), item_id) as sandbox:
@@ -265,9 +266,9 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                         )
                         agent_turns = None
                         try:
-                            trajectory = await sandbox.read_file("/app/.harness/trajectory.jsonl", user="root")
-                            Path(paths["root"]).mkdir(parents=True, exist_ok=True)
-                            (Path(paths["root"]) / "claude-code.jsonl").write_text(trajectory)
+                            claude_trajectory = await sandbox.read_file(
+                                "/app/.harness/trajectory.jsonl", user="root"
+                            )
                         except Exception as exc:  # noqa: BLE001 - grading can continue; retain warning for audit
                             logger.warning("[terminal_agent_rl] %s failed to retain CC trajectory: %s", item_id, exc)
                     else:
@@ -348,6 +349,15 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
         )
         return _abort_result(base_sample, f"exception:{type(exc).__name__}", item_id)
     finally:
+        if claude_trajectory is not None:
+            try:
+                root = Path(paths["root"])
+                root.mkdir(parents=True, exist_ok=True)
+                temporary = root / f".claude-code-{secrets.token_hex(4)}.tmp"
+                temporary.write_text(claude_trajectory, encoding="utf-8")
+                temporary.replace(root / "claude-code.jsonl")
+            except Exception as exc:  # noqa: BLE001 - cleanup and session drain must still run
+                logger.warning("[terminal_agent_rl] %s failed to persist CC trajectory: %s", item_id, exc)
         if not snapshot_cleanup_confirmed:
             await runtime.cleanup_candidate(paths)
         await state.adapter.drop_session(session_id, wait_timeout=30)

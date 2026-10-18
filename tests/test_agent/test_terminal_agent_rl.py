@@ -203,6 +203,7 @@ def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path
 
     async def run_claude(_self, sandbox, *, session_id, adapter_url, **_kwargs):
         assert sandbox.claude_code_installed is True
+        await sandbox.write_file("/app/.harness/trajectory.jsonl", '{"type":"result"}\n', user="root")
         async with aiohttp.ClientSession() as client:
             async with client.post(
                 f"{adapter_url}/v1/messages",
@@ -219,6 +220,12 @@ def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path
 
     async def run_case(monkeypatch: pytest.MonkeyPatch):
         _patch_rollout(monkeypatch, tmp_path, grade)
+
+        async def grade_with_exclusive_root(*, paths, **_kwargs):
+            Path(paths["root"]).mkdir(parents=True, exist_ok=False)
+            return dict(grade)
+
+        monkeypatch.setattr(runtime, "grade_sandbox", grade_with_exclusive_root)
         monkeypatch.setattr(
             generate,
             "CONFIG",
@@ -235,6 +242,7 @@ def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path
         SingletonMeta.clear_instances(generate._AdapterService)
         samples = await generate.generate(_args(), _sample(package), {"max_tokens": 64})
         assert samples and sum(float(sample.reward) for sample in samples) == pytest.approx(0.5)
+        assert (tmp_path / "work" / "claude-code.jsonl").read_text() == '{"type":"result"}\n'
         assert all(sample.metadata["agent_harness"] == "claude_code" for sample in samples)
         assert all(sample.metadata["agent_exit_code"] == 0 for sample in samples)
 
