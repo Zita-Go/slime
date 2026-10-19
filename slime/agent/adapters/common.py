@@ -76,6 +76,14 @@ def _render_token_ids(
     return list(ids)
 
 
+def _chat_template_kwargs(body: dict) -> dict[str, Any]:
+    """Return the request fields that affect chat-template rendering."""
+    result: dict[str, Any] = {}
+    if body.get("reasoning_effort") is not None:
+        result["reasoning_effort"] = body["reasoning_effort"]
+    return result
+
+
 def flatten_content(c: Any) -> str:
     """Flatten a wire content value into a chat-template string.
 
@@ -342,9 +350,7 @@ class BaseAdapter:
         t0 = time.monotonic()
         try:
             translated, tools_schema = self._translate(body)
-            template_kwargs = {}
-            if body.get("reasoning_effort") is not None:
-                template_kwargs["reasoning_effort"] = body["reasoning_effort"]
+            template_kwargs = _chat_template_kwargs(body)
             prompt_ids = _render_token_ids(
                 translated,
                 tok,
@@ -521,7 +527,7 @@ async def call_sglang_generate(
             top_p_token_ids, top_p_token_offsets = [], [0]
         else:
             top_p_token_ids = top_p_token_offsets = None
-    except (asyncio.CancelledError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+    except (asyncio.CancelledError, aiohttp.ClientError, TimeoutError) as e:
         # free the sglang slot eagerly on client cancel/timeout, else the
         # orphaned generation keeps occupying KV until its own length cap
         logger.debug("[%s] sid=%s rid=%s turn aborted: %s", adapter.log_prefix, session_id, rid, type(e).__name__)

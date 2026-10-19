@@ -18,6 +18,7 @@
 - Agent墙钟：14400秒；上下文262144；自动压缩阈值196608。
 - 采样：temperature1.0/top_p0.95/top_k40；单次生成上限32768。
 - CC设置：bypass permissions、关闭WebFetch/WebSearch与slash commands，提供`worker`子Agent，最大thinking 64000。
+- CC计数：`/count_tokens`经relay到Adapter；追加历史优先复用正式usage，压缩/重写/分叉、首次及距离196608窗口不足32768时使用Nex tokenizer精确重算，不发额外模型探针。
 - sandbox：每题冻结template identity；所有CC工具只在该sandbox内运行。
 
 ## 网络边界

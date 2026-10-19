@@ -124,6 +124,8 @@ GPU 冒烟和训练入口默认设置 `TERMINAL_RL_E2B_PROXY=http://10.51.6.27:5
 
 CC回调模型的方向与上述E2B控制面相反。真实探针已确认E2B无法直连训练Pod的hostNetwork地址或当前CPU Pod地址，5023也不能把这些私网地址暴露给E2B。因此训练默认`TERMINAL_RL_CC_TRANSPORT=e2b_pull`：sandbox中的CC只请求`127.0.0.1`代理，rollout worker经既有E2B控制通道拉取请求并转发给本机loopback AnthropicAdapter。该链路已用固定CC 2.1.193、真实E2B和真实Adapter完成两轮Bash工具调用、Sample/有限logprob结构与sandbox清理验收；上游生成在网络资格测试中是确定性脚本，不能替代真实模型rollout或GRPO验收。`direct`模式仅供已有可达公开地址时显式使用，并要求`ADAPTER_PUBLIC_HOST`；完整设计与验收边界见[RFC](RFC-claude-code-harness.md)。
 
+CC的`/v1/messages/count_tokens`请求同样经pull relay转发，不能在sandbox代理中伪造0。AnthropicAdapter默认对首轮、历史压缩/重写/分叉及临近阈值的请求使用与正式生成完全相同的Nex tokenizer/chat template精确计数；普通追加轮次复用上一轮正式响应的真实`input_tokens/output_tokens`，只对新增工具返回/消息和格式开销做保守估算。训练默认在`196608-32768=163840`以上强制精确计数；`TERMINAL_RL_CC_AUTO_COMPACT_WINDOW`与`TERMINAL_RL_CC_COUNT_EXACT_MARGIN`可显式调整，并同步传入Ray。该方案不额外调用模型，SGLang radix cache也不改变逻辑prompt token数。
+
 只验证 E2B public workspace 与 verifier 闭环、不加载模型时，可运行：
 
 ```bash

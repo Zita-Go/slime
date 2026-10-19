@@ -995,6 +995,10 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_agent/test_cc_relay.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_agent/test_harness.py"
             },
             {

@@ -95,6 +95,8 @@ def test_training_defaults_select_claude_code_with_four_hour_budget(monkeypatch)
     agent = TerminalToolAgent()
     assert config.agent_name == "claude_code"
     assert config.cc_transport == "e2b_pull"
+    assert config.cc_auto_compact_window == 196608
+    assert config.cc_count_exact_margin == 32768
     assert config.adapter_public_host is None
     assert config.adapter_bind_host == "127.0.0.1"
     assert config.agent_time_budget_sec == 14400

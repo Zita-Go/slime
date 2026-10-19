@@ -16,6 +16,8 @@ E2B_VENDOR_DIR=${E2B_VENDOR_DIR:-/gpfs/users/i-zhangguoqiang/terminal-code/RL/ve
 TERMINAL_RL_E2B_PROXY=${TERMINAL_RL_E2B_PROXY-http://10.51.6.27:5023}
 TERMINAL_RL_AGENT=${TERMINAL_RL_AGENT:-claude_code}
 TERMINAL_RL_CC_TRANSPORT=${TERMINAL_RL_CC_TRANSPORT:-e2b_pull}
+TERMINAL_RL_CC_AUTO_COMPACT_WINDOW=${TERMINAL_RL_CC_AUTO_COMPACT_WINDOW:-196608}
+TERMINAL_RL_CC_COUNT_EXACT_MARGIN=${TERMINAL_RL_CC_COUNT_EXACT_MARGIN:-32768}
 SLIME_AGENT_NODE_TARBALL=${SLIME_AGENT_NODE_TARBALL:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/vendor/claude-code-2.1.193/node-v20.19.5-linux-x64.tar.gz}
 SLIME_AGENT_CC_TARBALL=${SLIME_AGENT_CC_TARBALL:-/gpfs/shared_data/zhangguoqiang/terminal-code/RL/vendor/claude-code-2.1.193/anthropic-ai-claude-code-2.1.193.tgz}
 EXPECTED_NODE_TARBALL_SHA256=${EXPECTED_NODE_TARBALL_SHA256:-4eba5fbe1fb10753bc06e42f001a91c5cec16798b7764a3e9257adc59af47fe1}
@@ -84,6 +86,9 @@ die() {
 [[ "$MOE_DISPATCHER" == alltoall || "$MOE_DISPATCHER" == deepep ]] || die "MOE_DISPATCHER 必须为alltoall/deepep"
 [[ "$TERMINAL_RL_AGENT" == claude_code || "$TERMINAL_RL_AGENT" == terminal_tool ]] || die "TERMINAL_RL_AGENT 必须为claude_code/terminal_tool"
 [[ "$TERMINAL_RL_CC_TRANSPORT" == direct || "$TERMINAL_RL_CC_TRANSPORT" == e2b_pull ]] || die "TERMINAL_RL_CC_TRANSPORT 必须为direct/e2b_pull"
+[[ "$TERMINAL_RL_CC_AUTO_COMPACT_WINDOW" =~ ^[1-9][0-9]*$ ]] || die "TERMINAL_RL_CC_AUTO_COMPACT_WINDOW 必须为正整数"
+[[ "$TERMINAL_RL_CC_COUNT_EXACT_MARGIN" =~ ^[0-9]+$ ]] || die "TERMINAL_RL_CC_COUNT_EXACT_MARGIN 必须为非负整数"
+(( TERMINAL_RL_CC_COUNT_EXACT_MARGIN < TERMINAL_RL_CC_AUTO_COMPACT_WINDOW )) || die "CC精确计数余量必须小于自动压缩窗口"
 if [[ "$TERMINAL_RL_AGENT" == claude_code ]]; then
     [[ -f "$SLIME_AGENT_NODE_TARBALL" && ! -L "$SLIME_AGENT_NODE_TARBALL" ]] || die "固定Node包不存在或为符号链接"
     [[ -f "$SLIME_AGENT_CC_TARBALL" && ! -L "$SLIME_AGENT_CC_TARBALL" ]] || die "固定Claude Code包不存在或为符号链接"
@@ -276,8 +281,9 @@ export TERMINAL_RL_GRADE_TIMEOUT_SEC=${TERMINAL_RL_GRADE_TIMEOUT_SEC:-2400}
 export TERMINAL_RL_BOOT_CONCURRENCY=${TERMINAL_RL_BOOT_CONCURRENCY:-16}
 export TERMINAL_RL_MAX_TURNS=${TERMINAL_RL_MAX_TURNS:-400}
 export TERMINAL_RL_REASONING_EFFORT=${TERMINAL_RL_REASONING_EFFORT:-high}
-export TERMINAL_RL_AGENT TERMINAL_RL_CC_TRANSPORT SLIME_AGENT_NODE_TARBALL SLIME_AGENT_CC_TARBALL
-CC_SETTINGS_JSON='{"permissions":{"defaultMode":"bypassPermissions"},"autoCompactEnabled":true,"autoCompactWindow":196608}'
+export TERMINAL_RL_AGENT TERMINAL_RL_CC_TRANSPORT TERMINAL_RL_CC_AUTO_COMPACT_WINDOW
+export TERMINAL_RL_CC_COUNT_EXACT_MARGIN SLIME_AGENT_NODE_TARBALL SLIME_AGENT_CC_TARBALL
+printf -v CC_SETTINGS_JSON '{"permissions":{"defaultMode":"bypassPermissions"},"autoCompactEnabled":true,"autoCompactWindow":%d}' "$TERMINAL_RL_CC_AUTO_COMPACT_WINDOW"
 CC_AGENTS_JSON='{"worker":{"description":"Handle a delegated terminal subtask and report concrete results","prompt":"Work on the delegated subtask inside the current sandbox. Inspect and modify the environment as needed, run relevant checks, and return a concise evidence-based result.","tools":["Read","Edit","Write","Grep","Glob","Bash"]}}'
 export SLIME_AGENT_CC_EXTRA_ARGS=${SLIME_AGENT_CC_EXTRA_ARGS:-"--settings '$CC_SETTINGS_JSON' --disable-slash-commands --agents '$CC_AGENTS_JSON' --disallowedTools WebFetch WebSearch"}
 export SLIME_AGENT_CC_EXTRA_ENVS=${SLIME_AGENT_CC_EXTRA_ENVS:-'{"MAX_THINKING_TOKENS":"64000"}'}
@@ -322,6 +328,8 @@ keys = (
     "TERMINAL_RL_E2B_PROXY",
     "TERMINAL_RL_AGENT",
     "TERMINAL_RL_CC_TRANSPORT",
+    "TERMINAL_RL_CC_AUTO_COMPACT_WINDOW",
+    "TERMINAL_RL_CC_COUNT_EXACT_MARGIN",
     "SLIME_AGENT_NODE_TARBALL",
     "SLIME_AGENT_CC_TARBALL",
     "SLIME_AGENT_CC_EXTRA_ARGS",

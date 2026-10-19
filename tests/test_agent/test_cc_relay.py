@@ -10,7 +10,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from examples.terminal_agent_rl.cc_relay import E2BPullRelay, RELAY_ROOT
+from examples.terminal_agent_rl.cc_relay import E2BPullRelay, RELAY_ROOT, SANDBOX_PROXY
+
+NUM_GPUS = 0
 
 
 class MemorySandbox:
@@ -99,3 +101,12 @@ def test_pull_relay_returns_sanitized_502_for_invalid_request() -> None:
 def test_pull_relay_rejects_non_positive_poll_interval() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         E2BPullRelay(MemorySandbox(), "http://127.0.0.1:1", poll_interval_sec=0)
+
+
+def test_sandbox_proxy_forwards_count_tokens_instead_of_fabricating_zero() -> None:
+    assert 'if self.path.startswith("/v1/messages/count_tokens")' not in SANDBOX_PROXY
+    assert 'body = b\'{"input_tokens":0}\'' not in SANDBOX_PROXY
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

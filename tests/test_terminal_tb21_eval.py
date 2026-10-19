@@ -367,6 +367,8 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
         "MAX_GEN_LEN",
         "TERMINAL_RL_AGENT_TIME_BUDGET_SEC",
         "TERMINAL_RL_CC_TRANSPORT",
+        "TERMINAL_RL_CC_AUTO_COMPACT_WINDOW",
+        "TERMINAL_RL_CC_COUNT_EXACT_MARGIN",
         "TERMINAL_RL_MAX_TURNS",
         "TERMINAL_RL_REASONING_EFFORT",
         "TB21_MAX_TURNS",
@@ -397,6 +399,8 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["TERMINAL_RL_REASONING_EFFORT"] == "high"
     assert runtime["env_vars"]["TERMINAL_RL_AGENT"] == "claude_code"
     assert runtime["env_vars"]["TERMINAL_RL_CC_TRANSPORT"] == "e2b_pull"
+    assert runtime["env_vars"]["TERMINAL_RL_CC_AUTO_COMPACT_WINDOW"] == "196608"
+    assert runtime["env_vars"]["TERMINAL_RL_CC_COUNT_EXACT_MARGIN"] == "32768"
     assert runtime["env_vars"]["TERMINAL_RL_KEEP_VERIFIER_ARTIFACTS"] == "0"
     assert runtime["env_vars"]["ADAPTER_BIND_HOST"] == "127.0.0.1"
     assert "ADAPTER_PUBLIC_HOST" not in runtime["env_vars"]

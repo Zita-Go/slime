@@ -54,14 +54,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
-        if self.path.startswith("/v1/messages/count_tokens"):
-            body = b'{"input_tokens":0}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
         request_id = uuid.uuid4().hex
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)

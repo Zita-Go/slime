@@ -94,6 +94,105 @@ def test_openai_session_id_prefers_bearer_then_body():
 
 
 # ===========================================================================
+# §1b count_tokens: exact first/rewrite, usage-first append
+# ===========================================================================
+
+
+def test_anthropic_count_tokens_uses_exact_then_formal_usage_for_append_only_history():
+    async def run_case():
+        async with FakeSGLangServer([[(-0.1, 101)]]) as sglang:
+            tok = FakeTokenizer(outputs={(101,): "answer"})
+            adapter = anthropic.AnthropicAdapter(
+                tokenizer=tok,
+                sglang_url=sglang.url,
+                count_tokens_exact_threshold=10_000,
+            )
+            adapter.open_session("sid-count")
+            client = TestClient(TestServer(adapter.app))
+            await client.start_server()
+            headers = {"X-Api-Key": "sid-count"}
+            first_body = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+            try:
+                first_count = await client.post("/v1/messages/count_tokens", headers=headers, json=first_body)
+                first_count_data = await first_count.json()
+                assert first_count_data == {"input_tokens": 4}
+                assert len(tok.rendered) == 1
+
+                generated = await client.post("/v1/messages", headers=headers, json=first_body)
+                generated_data = await generated.json()
+                assert generated.status == 200 and generated_data["usage"] == {
+                    "input_tokens": 4,
+                    "output_tokens": 1,
+                }
+                assert len(tok.rendered) == 2
+
+                appended_body = {
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {"role": "assistant", "content": generated_data["content"]},
+                        {"role": "user", "content": "next"},
+                    ],
+                }
+                appended = await client.post("/v1/messages/count_tokens", headers=headers, json=appended_body)
+                appended_data = await appended.json()
+                assert appended.status == 200
+                assert appended_data["input_tokens"] >= 10
+                assert len(tok.rendered) == 2  # append-only path reused formal usage; no full re-render.
+
+                rewritten_body = {
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "compacted summary"}],
+                }
+                rewritten = await client.post("/v1/messages/count_tokens", headers=headers, json=rewritten_body)
+                assert await rewritten.json() == {"input_tokens": 5}
+                assert len(tok.rendered) == 3  # history rewrite forces exact tokenizer count.
+            finally:
+                await client.close()
+            await adapter.drop_session("sid-count")
+
+    asyncio.run(run_case())
+
+
+def test_anthropic_count_tokens_exactly_renders_append_near_threshold():
+    async def run_case():
+        async with FakeSGLangServer([[(-0.1, 101)]]) as sglang:
+            tok = FakeTokenizer(outputs={(101,): "answer"})
+            adapter = anthropic.AnthropicAdapter(
+                tokenizer=tok,
+                sglang_url=sglang.url,
+                count_tokens_exact_threshold=1,
+            )
+            adapter.open_session("sid-near")
+            client = TestClient(TestServer(adapter.app))
+            await client.start_server()
+            headers = {"Authorization": "Bearer sid-near"}
+            first_body = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+            try:
+                generated = await client.post("/v1/messages", headers=headers, json=first_body)
+                generated_data = await generated.json()
+                counted = await client.post(
+                    "/v1/messages/count_tokens",
+                    headers=headers,
+                    json={
+                        "model": "m",
+                        "messages": [
+                            {"role": "user", "content": "hello"},
+                            {"role": "assistant", "content": generated_data["content"]},
+                            {"role": "user", "content": "next"},
+                        ],
+                    },
+                )
+                assert await counted.json() == {"input_tokens": 10}
+                assert len(tok.rendered) == 2
+            finally:
+                await client.close()
+            await adapter.drop_session("sid-near")
+
+    asyncio.run(run_case())
+
+
+# ===========================================================================
 # §2 translation (wire -> chat-template messages)
 # ===========================================================================
 

@@ -16,9 +16,12 @@ them. See BaseAdapter for the hooks to fill.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import secrets
+from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import web
@@ -26,6 +29,8 @@ from aiohttp import web
 from slime.agent.adapters.common import (
     BaseAdapter,
     Reply,
+    _chat_template_kwargs,
+    _render_token_ids,
     flatten_content,
     manager_finish_reason,
     sid_from_bearer,
@@ -34,6 +39,15 @@ from slime.agent.adapters.common import (
 from slime.agent.parsing import ParsedModelOutput
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _CountBaseline:
+    messages_after_response: list[dict]
+    tools_schema: list[dict] | None
+    template_kwargs: dict[str, Any]
+    input_tokens: int
+    retained_assistant_tokens: int
 
 
 class AnthropicAdapter(BaseAdapter):
@@ -45,9 +59,16 @@ class AnthropicAdapter(BaseAdapter):
     max_token_keys = ("max_tokens",)
     stop_keys = ("stop_sequences",)
 
+    def __init__(self, *, count_tokens_exact_threshold: int | None = None, **kwargs) -> None:
+        if count_tokens_exact_threshold is not None and count_tokens_exact_threshold <= 0:
+            raise ValueError("count_tokens_exact_threshold must be positive or None")
+        self.count_tokens_exact_threshold = count_tokens_exact_threshold
+        self._count_baselines: dict[str, deque[_CountBaseline]] = {}
+        super().__init__(**kwargs)
+
     def _register_routes(self, app: web.Application) -> None:
         app.router.add_post("/v1/messages", self._run_turn)
-        app.router.add_post("/v1/messages/count_tokens", _count_tokens)
+        app.router.add_post("/v1/messages/count_tokens", self._count_tokens)
 
     def _session_id(self, request: web.Request, body: dict) -> str:
         return _request_session_id(request)
@@ -71,8 +92,108 @@ class AnthropicAdapter(BaseAdapter):
     async def _respond(self, request, body, reply, in_tok, out_tok, stream) -> web.StreamResponse:
         blocks, stop_reason = reply.wire
         if stream:
-            return await _render_stream(request, blocks, stop_reason, in_tok, out_tok)
-        return web.json_response(_render_response(body, blocks, stop_reason, in_tok, out_tok))
+            response = await _render_stream(request, blocks, stop_reason, in_tok, out_tok)
+        else:
+            response = web.json_response(_render_response(body, blocks, stop_reason, in_tok, out_tok))
+        self._remember_count_baseline(
+            _request_session_id(request),
+            body,
+            reply.manager_message,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+        )
+        return response
+
+    async def drop_session(self, sid: str, *, wait_timeout: float = 5.0) -> None:
+        try:
+            await super().drop_session(sid, wait_timeout=wait_timeout)
+        finally:
+            self._count_baselines.pop(sid, None)
+
+    def _message_token_upper_bound(self, message: dict) -> int:
+        serialized = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        try:
+            token_count = len(self.tokenizer.encode(serialized, add_special_tokens=False))
+        except TypeError:
+            token_count = len(self.tokenizer.encode(serialized))
+        # Role delimiters, tool-call wrappers and the next generation marker
+        # are template-specific.  The allowance keeps the append-only path
+        # conservative; near the compaction boundary we render exactly.
+        return token_count + 64
+
+    def _retained_assistant_tokens(self, assistant_message: dict, output_tokens: int) -> int:
+        # Plain text/reasoning is retained verbatim, so the provider's formal
+        # output usage is authoritative; only chat-template delimiters remain.
+        # Parsed tool calls may be re-serialized into a different wire shape,
+        # hence the conservative structured-message fallback for that case.
+        if not assistant_message.get("tool_calls"):
+            return output_tokens + 64
+        return max(output_tokens, self._message_token_upper_bound(assistant_message))
+
+    def _remember_count_baseline(
+        self,
+        sid: str,
+        body: dict,
+        assistant_message: dict,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        translated, tools_schema = self._translate(body)
+        baseline = _CountBaseline(
+            messages_after_response=[*copy.deepcopy(translated), copy.deepcopy(assistant_message)],
+            tools_schema=copy.deepcopy(tools_schema),
+            template_kwargs=_chat_template_kwargs(body),
+            input_tokens=input_tokens,
+            retained_assistant_tokens=self._retained_assistant_tokens(assistant_message, output_tokens),
+        )
+        self._count_baselines.setdefault(sid, deque(maxlen=32)).append(baseline)
+
+    def _usage_first_count(
+        self,
+        sid: str,
+        translated: list[dict],
+        tools_schema: list[dict] | None,
+        template_kwargs: dict[str, Any],
+    ) -> int | None:
+        for baseline in reversed(self._count_baselines.get(sid, ())):
+            prefix = baseline.messages_after_response
+            if baseline.tools_schema != tools_schema or baseline.template_kwargs != template_kwargs:
+                continue
+            if len(translated) < len(prefix) or translated[: len(prefix)] != prefix:
+                continue
+            appended = translated[len(prefix) :]
+            return (
+                baseline.input_tokens
+                + baseline.retained_assistant_tokens
+                + sum(self._message_token_upper_bound(message) for message in appended)
+                + 64
+            )
+        return None
+
+    async def _count_tokens(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self._preprocess_body(body)
+        translated, tools_schema = self._translate(body)
+        template_kwargs = _chat_template_kwargs(body)
+        sid = _request_session_id(request)
+        estimated = self._usage_first_count(sid, translated, tools_schema, template_kwargs)
+        threshold = self.count_tokens_exact_threshold
+        if estimated is not None and threshold is not None and estimated < threshold:
+            logger.info("[anthropic_adapter] sid=%s count_tokens=%d source=usage_estimate", sid, estimated)
+            return web.json_response({"input_tokens": estimated})
+
+        exact = len(
+            _render_token_ids(
+                translated,
+                self.tokenizer,
+                tools=tools_schema,
+                add_generation_prompt=True,
+                chat_template_kwargs=template_kwargs,
+            )
+        )
+        logger.info("[anthropic_adapter] sid=%s count_tokens=%d source=exact", sid, exact)
+        return web.json_response({"input_tokens": exact})
 
 
 # --- Translation (Anthropic wire -> chat-template messages) ---
@@ -272,13 +393,6 @@ async def _render_stream(request, blocks, stop_reason, in_tok, out_tok) -> web.S
     await out.write(f"event: message_stop\ndata: {json.dumps(mst_data, ensure_ascii=False)}\n\n".encode())
 
     return out
-
-
-# count_tokens runs every turn but the client uses it only as a hint, not a
-# hard budget, so returning 0 is fine.
-async def _count_tokens(request: web.Request) -> web.Response:
-    await request.read()
-    return web.json_response({"input_tokens": 0})
 
 
 # --- Anthropic-specific quirks: mid-list system folding ---

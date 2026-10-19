@@ -35,6 +35,8 @@ logging.getLogger("e2b").setLevel(logging.WARNING)
 class TerminalConfig:
     agent_name: str
     cc_transport: str
+    cc_auto_compact_window: int
+    cc_count_exact_margin: int
     adapter_public_host: str | None
     adapter_bind_host: str
     adapter_port: int
@@ -52,6 +54,12 @@ class TerminalConfig:
         cc_transport = os.environ.get("TERMINAL_RL_CC_TRANSPORT", "e2b_pull").strip().lower()
         if cc_transport not in {"direct", "e2b_pull"}:
             raise ValueError("TERMINAL_RL_CC_TRANSPORT must be direct or e2b_pull")
+        cc_auto_compact_window = int(os.environ.get("TERMINAL_RL_CC_AUTO_COMPACT_WINDOW", "196608"))
+        cc_count_exact_margin = int(os.environ.get("TERMINAL_RL_CC_COUNT_EXACT_MARGIN", "32768"))
+        if cc_auto_compact_window <= 0:
+            raise ValueError("TERMINAL_RL_CC_AUTO_COMPACT_WINDOW must be positive")
+        if not 0 <= cc_count_exact_margin < cc_auto_compact_window:
+            raise ValueError("TERMINAL_RL_CC_COUNT_EXACT_MARGIN must be in [0, auto compact window)")
         agent_budget = int(os.environ.get("TERMINAL_RL_AGENT_TIME_BUDGET_SEC", "14400"))
         guard = int(os.environ.get("TERMINAL_RL_ROLLOUT_GUARD_SEC", "0") or 0)
         if guard <= 0:
@@ -60,6 +68,8 @@ class TerminalConfig:
         return cls(
             agent_name=agent_name,
             cc_transport=cc_transport,
+            cc_auto_compact_window=cc_auto_compact_window,
+            cc_count_exact_margin=cc_count_exact_margin,
             adapter_public_host=os.environ.get("ADAPTER_PUBLIC_HOST") or None,
             adapter_bind_host=os.environ.get(
                 "ADAPTER_BIND_HOST",
@@ -128,12 +138,18 @@ class _AdapterService(metaclass=SingletonMeta):
             raise RuntimeError(
                 "ADAPTER_PUBLIC_HOST is required for Claude Code because the E2B sandbox must reach the Anthropic adapter"
             )
+        adapter_options = {}
+        if adapter_cls is AnthropicAdapter:
+            adapter_options["count_tokens_exact_threshold"] = (
+                CONFIG.cc_auto_compact_window - CONFIG.cc_count_exact_margin
+            )
         self.adapter = adapter_cls(
             tokenizer=self.tokenizer,
             sglang_url=sglang_url,
             tool_parser=self.tool_parser,
             reasoning_parser=self.reasoning_parser,
             fork_threshold_tokens=CONFIG.fork_merge_threshold,
+            **adapter_options,
         )
         self.app_handle = run_app_in_thread(
             self.adapter.app,
