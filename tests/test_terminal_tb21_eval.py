@@ -407,6 +407,8 @@ def test_actual_shell_arguments_and_ray_tensorboard_env(tmp_path, phase, save, n
     assert runtime["env_vars"]["SLIME_AGENT_NODE_TARBALL"] == str(node_tarball)
     assert runtime["env_vars"]["SLIME_AGENT_CC_TARBALL"] == str(cc_tarball)
     assert "autoCompactWindow" in runtime["env_vars"]["SLIME_AGENT_CC_EXTRA_ARGS"]
+    assert "--agents" not in runtime["env_vars"]["SLIME_AGENT_CC_EXTRA_ARGS"]
+    assert "worker" not in runtime["env_vars"]["SLIME_AGENT_CC_EXTRA_ARGS"]
     assert runtime["env_vars"]["TB21_AGENT_TIME_BUDGET_SEC"] == "21600"
     assert runtime["env_vars"]["TB21_TRIAL_TIMEOUT_SEC"] == "32400"
     assert runtime["env_vars"]["TB21_MAX_TURNS"] == "100000"

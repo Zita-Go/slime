@@ -284,8 +284,7 @@ export TERMINAL_RL_REASONING_EFFORT=${TERMINAL_RL_REASONING_EFFORT:-high}
 export TERMINAL_RL_AGENT TERMINAL_RL_CC_TRANSPORT TERMINAL_RL_CC_AUTO_COMPACT_WINDOW
 export TERMINAL_RL_CC_COUNT_EXACT_MARGIN SLIME_AGENT_NODE_TARBALL SLIME_AGENT_CC_TARBALL
 printf -v CC_SETTINGS_JSON '{"permissions":{"defaultMode":"bypassPermissions"},"autoCompactEnabled":true,"autoCompactWindow":%d}' "$TERMINAL_RL_CC_AUTO_COMPACT_WINDOW"
-CC_AGENTS_JSON='{"worker":{"description":"Handle a delegated terminal subtask and report concrete results","prompt":"Work on the delegated subtask inside the current sandbox. Inspect and modify the environment as needed, run relevant checks, and return a concise evidence-based result.","tools":["Read","Edit","Write","Grep","Glob","Bash"]}}'
-export SLIME_AGENT_CC_EXTRA_ARGS=${SLIME_AGENT_CC_EXTRA_ARGS:-"--settings '$CC_SETTINGS_JSON' --disable-slash-commands --agents '$CC_AGENTS_JSON' --disallowedTools WebFetch WebSearch"}
+export SLIME_AGENT_CC_EXTRA_ARGS=${SLIME_AGENT_CC_EXTRA_ARGS:-"--settings '$CC_SETTINGS_JSON' --disable-slash-commands"}
 export SLIME_AGENT_CC_EXTRA_ENVS=${SLIME_AGENT_CC_EXTRA_ENVS:-'{"MAX_THINKING_TOKENS":"64000"}'}
 export TB21_AGENT_TIME_BUDGET_SEC=${TB21_AGENT_TIME_BUDGET_SEC:-21600}
 [[ "$TB21_AGENT_TIME_BUDGET_SEC" =~ ^[1-9][0-9]*$ ]] || { echo "TB21_AGENT_TIME_BUDGET_SEC必须为正整数" >&2; exit 2; }

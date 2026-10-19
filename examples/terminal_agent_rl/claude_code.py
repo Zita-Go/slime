@@ -46,9 +46,24 @@ class RootClaudeCodeHarness(ClaudeCodeHarness):
         )
 
     async def launch_and_wait(self, sb: Sandbox, ctx: HarnessContext, prompt: str, time_budget_sec: int) -> int:
-        command = f"/usr/local/bin/claude -p {shlex.quote(prompt)} {self.launch_flags}"
-        if extra := os.environ.get(self.extra_args_env, "").strip():
-            command = f"{command} {extra}"
+        extra_args = shlex.split(os.environ.get(self.extra_args_env, ""))
+        # 同时覆盖新旧CC子Agent工具名，并保留用户额外禁用的工具。
+        disallowed = ["Task", "Agent", "WebFetch", "WebSearch"]
+        args = ["/usr/local/bin/claude", "-p", prompt, *shlex.split(self.launch_flags)]
+        index = 0
+        while index < len(extra_args):
+            arg = extra_args[index]
+            index += 1
+            if arg == "--disallowedTools":
+                while index < len(extra_args) and not extra_args[index].startswith("-"):
+                    disallowed.extend(extra_args[index].split(","))
+                    index += 1
+            elif arg.startswith("--disallowedTools="):
+                disallowed.extend(arg.split("=", 1)[1].split(","))
+            else:
+                args.append(arg)
+        args.extend(["--disallowedTools", *dict.fromkeys(tool for tool in disallowed if tool)])
+        command = shlex.join(args)
         env = {
             "ANTHROPIC_BASE_URL": ctx.adapter_url,
             "ANTHROPIC_AUTH_TOKEN": ctx.session_id,

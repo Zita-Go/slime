@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import shlex
 import sys
 import types
 from pathlib import Path
@@ -360,7 +361,8 @@ def test_terminal_generate_requeues_nonzero_agent_exit_without_grading(tmp_path:
         asyncio.run(run_case(monkeypatch))
 
 
-def test_terminal_claude_code_runs_as_root(monkeypatch):
+@pytest.mark.parametrize("extra", ["", "--settings '{}' --disallowedTools Bash", "--disallowedTools=Read,Edit"])
+def test_terminal_claude_code_runs_as_root(monkeypatch, extra):
     captured = {}
 
     async def launched(env):
@@ -388,11 +390,21 @@ def test_terminal_claude_code_runs_as_root(monkeypatch):
         assert "--dangerously-skip-permissions" in launcher
         assert "--allow-dangerously-skip-permissions" in launcher
         assert "--permission-mode bypassPermissions" not in launcher
+        command = next(line for line in launcher.splitlines() if line.startswith("/usr/local/bin/claude "))
+        args = shlex.split(command)
+        assert args.count("--disallowedTools") == 1
+        blocked = args[args.index("--disallowedTools") + 1 :]
+        assert {"Task", "Agent", "WebFetch", "WebSearch"} <= set(blocked)
+        if "Bash" in extra:
+            assert "Bash" in blocked
+        if "Read,Edit" in extra:
+            assert {"Read", "Edit"} <= set(blocked)
         assert captured["ANTHROPIC_BASE_URL"] == "http://adapter:18001"
         assert captured["ANTHROPIC_AUTH_TOKEN"] == "session-root"
         assert captured["IS_SANDBOX"] == "1"
 
     monkeypatch.setattr(sandbox_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setenv("SLIME_AGENT_CC_EXTRA_ARGS", extra)
     asyncio.run(run_case())
 
 
