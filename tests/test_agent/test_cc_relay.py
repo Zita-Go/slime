@@ -10,7 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from examples.terminal_agent_rl.cc_relay import E2BPullRelay, RELAY_ROOT, SANDBOX_PROXY
+from examples.terminal_agent_rl.cc_relay import E2BPullRelay, E2BRelayError, RELAY_ROOT, SANDBOX_PROXY
 
 NUM_GPUS = 0
 
@@ -19,6 +19,7 @@ class MemorySandbox:
     def __init__(self, files: dict[str, str] | None = None) -> None:
         self.files = dict(files or {})
         self.commands: list[str] = []
+        self.exec_options: list[dict] = []
 
     async def read_file(self, path: str, *, user: str = "root") -> str:
         return self.files[path]
@@ -28,8 +29,18 @@ class MemorySandbox:
 
     async def exec(self, command: str, **_kwargs):
         self.commands.append(command)
+        self.exec_options.append(dict(_kwargs))
         if command.startswith("rm -f "):
             self.files.pop(command.removeprefix("rm -f "), None)
+        elif command.startswith("if test -f "):
+            parts = command.split()
+            destination = parts[3].rstrip(";")
+            source = parts[7].rstrip(";")
+            assert parts[10] == source and parts[11].rstrip(";") == destination
+            if destination in self.files:
+                self.files.pop(source, None)
+            else:
+                self.files[destination] = self.files.pop(source)
         elif command.startswith("mv "):
             _, source, destination = command.split()
             self.files[destination] = self.files.pop(source)
@@ -78,6 +89,11 @@ def test_pull_relay_forwards_request_and_publishes_response() -> None:
         assert response["status"] == 201
         assert json.loads(base64.b64decode(response["body_b64"])) == {"type": "message", "content": []}
         assert response["headers"] == {"Content-Type": "application/json", "Cache-Control": "no-store"}
+        publish_command = sandbox.commands[-1]
+        assert sandbox.exec_options[-1]["idempotent"] is True
+        assert "if test -f" in publish_command
+        await sandbox.exec(publish_command, idempotent=True)
+        assert response_path in sandbox.files
 
     asyncio.run(run_case())
 
@@ -101,6 +117,27 @@ def test_pull_relay_returns_sanitized_502_for_invalid_request() -> None:
 def test_pull_relay_rejects_non_positive_poll_interval() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         E2BPullRelay(MemorySandbox(), "http://127.0.0.1:1", poll_interval_sec=0)
+
+
+def test_pull_relay_surfaces_background_publication_failure() -> None:
+    class FailingPublishSandbox(MemorySandbox):
+        async def write_file(self, path: str, content, *, user: str = "root") -> None:
+            if "/responses/." in path:
+                raise RuntimeError("response store unavailable")
+            await super().write_file(path, content, user=user)
+
+    async def run_case() -> None:
+        request_id = "broken-publication"
+        sandbox = FailingPublishSandbox({f"{RELAY_ROOT}/requests/{request_id}.json": "not-json"})
+        relay = E2BPullRelay(sandbox, "http://127.0.0.1:1")
+        task = asyncio.create_task(relay._forward(request_id))
+        relay._forward_tasks.add(task)
+        task.add_done_callback(relay._forward_done)
+        with pytest.raises(E2BRelayError, match="pull relay failed"):
+            await asyncio.wait_for(relay.wait_failure(), timeout=1)
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run_case())
 
 
 def test_sandbox_proxy_forwards_count_tokens_instead_of_fabricating_zero() -> None:

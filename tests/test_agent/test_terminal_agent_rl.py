@@ -205,7 +205,11 @@ def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path
 
     async def run_claude(_self, sandbox, *, session_id, adapter_url, **_kwargs):
         assert sandbox.claude_code_installed is True
-        await sandbox.write_file("/app/.harness/trajectory.jsonl", '{"type":"result"}\n', user="root")
+        await sandbox.write_file(
+            "/app/.harness/trajectory.jsonl",
+            '{"type":"result","is_error":false}\n',
+            user="root",
+        )
         async with aiohttp.ClientSession() as client:
             async with client.post(
                 f"{adapter_url}/v1/messages",
@@ -244,9 +248,113 @@ def test_terminal_generate_uses_claude_code_and_anthropic_adapter(tmp_path: Path
         SingletonMeta.clear_instances(generate._AdapterService)
         samples = await generate.generate(_args(), _sample(package), {"max_tokens": 64})
         assert samples and sum(float(sample.reward) for sample in samples) == pytest.approx(0.5)
-        assert (tmp_path / "work" / "claude-code.jsonl").read_text() == '{"type":"result"}\n'
+        assert (tmp_path / "work" / "claude-code.jsonl").read_text() == (
+            '{"type":"result","is_error":false}\n'
+        )
         assert all(sample.metadata["agent_harness"] == "claude_code" for sample in samples)
         assert all(sample.metadata["agent_exit_code"] == 0 for sample in samples)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        asyncio.run(run_case(monkeypatch))
+
+
+def test_terminal_generate_requeues_claude_code_api_error_without_grading(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    grade_called = False
+
+    async def install_cli(_self, _sandbox):
+        return None
+
+    async def run_claude(_self, sandbox, **_kwargs):
+        await sandbox.write_file(
+            "/app/.harness/trajectory.jsonl",
+            '{"type":"result","is_error":true,"api_error_status":502}\n',
+            user="root",
+        )
+        return 0
+
+    async def grade_must_not_run(**_kwargs):
+        nonlocal grade_called
+        grade_called = True
+        raise AssertionError("CC infrastructure failures must not reach the verifier")
+
+    async def run_case(monkeypatch: pytest.MonkeyPatch):
+        _patch_rollout(monkeypatch, tmp_path, {})
+        monkeypatch.setattr(
+            generate,
+            "CONFIG",
+            dataclasses.replace(
+                generate.CONFIG,
+                agent_name="claude_code",
+                cc_transport="direct",
+                adapter_public_host="127.0.0.1",
+                adapter_bind_host="127.0.0.1",
+            ),
+        )
+        monkeypatch.setattr(type(generate._CLAUDE_CODE), "install_cli", install_cli)
+        monkeypatch.setattr(type(generate._CLAUDE_CODE), "run", run_claude)
+        monkeypatch.setattr(runtime, "grade_sandbox", grade_must_not_run)
+        SingletonMeta.clear_instances(generate._AdapterService)
+
+        samples = await generate.generate(_args(), _sample(package), {"max_tokens": 64})
+
+        assert len(samples) == 1
+        assert samples[0].status == Sample.Status.ABORTED
+        assert samples[0].remove_sample is True
+        assert samples[0].metadata["abort_reason"] == "claude_code_api_error_502"
+        assert samples[0].metadata["agent_exit_code"] == 0
+        assert grade_called is False
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        asyncio.run(run_case(monkeypatch))
+
+
+def test_terminal_generate_requeues_nonzero_agent_exit_without_grading(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    grade_called = False
+
+    async def install_cli(_self, _sandbox):
+        return None
+
+    async def run_claude(_self, sandbox, **_kwargs):
+        await sandbox.write_file(
+            "/app/.harness/trajectory.jsonl",
+            '{"type":"result","is_error":false}\n',
+            user="root",
+        )
+        return 1
+
+    async def grade_must_not_run(**_kwargs):
+        nonlocal grade_called
+        grade_called = True
+        raise AssertionError("nonzero harness exits must not reach the verifier")
+
+    async def run_case(monkeypatch: pytest.MonkeyPatch):
+        _patch_rollout(monkeypatch, tmp_path, {})
+        monkeypatch.setattr(
+            generate,
+            "CONFIG",
+            dataclasses.replace(
+                generate.CONFIG,
+                agent_name="claude_code",
+                cc_transport="direct",
+                adapter_public_host="127.0.0.1",
+                adapter_bind_host="127.0.0.1",
+            ),
+        )
+        monkeypatch.setattr(type(generate._CLAUDE_CODE), "install_cli", install_cli)
+        monkeypatch.setattr(type(generate._CLAUDE_CODE), "run", run_claude)
+        monkeypatch.setattr(runtime, "grade_sandbox", grade_must_not_run)
+        SingletonMeta.clear_instances(generate._AdapterService)
+
+        samples = await generate.generate(_args(), _sample(package), {"max_tokens": 64})
+
+        assert len(samples) == 1
+        assert samples[0].status == Sample.Status.ABORTED
+        assert samples[0].metadata["abort_reason"] == "agent_exit_code_1"
+        assert grade_called is False
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         asyncio.run(run_case(monkeypatch))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -179,12 +180,48 @@ class _AdapterService(metaclass=SingletonMeta):
 
 
 @asynccontextmanager
-async def _agent_adapter_endpoint(sandbox: NextaskE2BSandbox, state: _AdapterService) -> AsyncIterator[str]:
+async def _agent_adapter_endpoint(
+    sandbox: NextaskE2BSandbox, state: _AdapterService
+) -> AsyncIterator[tuple[str, E2BPullRelay | None]]:
     if CONFIG.agent_name == "claude_code" and CONFIG.cc_transport == "e2b_pull":
         async with E2BPullRelay(sandbox, state.adapter_url) as relay:
-            yield relay.adapter_url
+            yield relay.adapter_url, relay
         return
-    yield state.adapter_url
+    yield state.adapter_url, None
+
+
+async def _run_claude_code(
+    sandbox: NextaskE2BSandbox,
+    *,
+    session_id: str,
+    adapter_url: str,
+    relay: E2BPullRelay | None,
+    prompt: str,
+) -> int:
+    run = _CLAUDE_CODE.run(
+        sandbox,
+        workdir="/app",
+        session_id=session_id,
+        adapter_url=adapter_url,
+        time_budget_sec=CONFIG.agent_time_budget_sec,
+        prompt=prompt,
+    )
+    if relay is None:
+        return await run
+
+    agent_task = asyncio.create_task(run, name=f"claude-code-{session_id}")
+    relay_failure = asyncio.create_task(relay.wait_failure(), name=f"claude-code-relay-{session_id}")
+    try:
+        done, _ = await asyncio.wait((agent_task, relay_failure), return_when=asyncio.FIRST_COMPLETED)
+        if agent_task in done:
+            return agent_task.result()
+        await relay_failure
+        raise AssertionError("relay.wait_failure returned without raising")
+    finally:
+        for task in (agent_task, relay_failure):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(agent_task, relay_failure, return_exceptions=True)
 
 
 def _task_metadata(sample: Sample) -> dict[str, Any]:
@@ -239,6 +276,25 @@ def _reward_from_grade(grade: dict[str, Any]) -> float | None:
     return value if 0.0 <= value <= 1.0 else None
 
 
+def _claude_code_result_error(trajectory: str | None) -> str | None:
+    """Return an auditable abort reason unless CC emitted a successful result."""
+
+    for raw_line in reversed((trajectory or "").splitlines()):
+        try:
+            record = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("type") != "result":
+            continue
+        if record.get("is_error") is False:
+            return None
+        status = record.get("api_error_status")
+        if isinstance(status, int) and not isinstance(status, bool):
+            return f"claude_code_api_error_{status}"
+        return "claude_code_result_error"
+    return "claude_code_result_missing"
+
+
 async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], evaluation: bool = False):
     """Run one terminal agent, grade its E2B snapshot, and emit trainable tokens."""
 
@@ -270,14 +326,13 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                 if workspace.get("ok") is not True:
                     raise runtime.BridgeInvocationError(f"workspace materialization failed: {workspace!r}")
                 prompt = PROMPT_PREFIX + str(base_sample.prompt)
-                async with _agent_adapter_endpoint(sandbox, state) as adapter_url:
+                async with _agent_adapter_endpoint(sandbox, state) as (adapter_url, relay):
                     if CONFIG.agent_name == "claude_code":
-                        agent_exit_code = await _CLAUDE_CODE.run(
+                        agent_exit_code = await _run_claude_code(
                             sandbox,
-                            workdir="/app",
                             session_id=session_id,
                             adapter_url=adapter_url,
-                            time_budget_sec=CONFIG.agent_time_budget_sec,
+                            relay=relay,
                             prompt=prompt,
                         )
                         agent_turns = None
@@ -297,6 +352,22 @@ async def generate(args, base_sample: Sample, sampling_params: dict[str, Any], e
                         )
                         agent_exit_code = agent_result.exit_code
                         agent_turns = agent_result.turns
+                if agent_exit_code != 0:
+                    base_sample.metadata = {
+                        **(base_sample.metadata or {}),
+                        "agent_exit_code": agent_exit_code,
+                        "agent_harness": CONFIG.agent_name,
+                    }
+                    return _abort_result(base_sample, f"agent_exit_code_{agent_exit_code}", item_id)
+                if CONFIG.agent_name == "claude_code":
+                    cc_error = _claude_code_result_error(claude_trajectory)
+                    if cc_error is not None:
+                        base_sample.metadata = {
+                            **(base_sample.metadata or {}),
+                            "agent_exit_code": agent_exit_code,
+                            "agent_harness": CONFIG.agent_name,
+                        }
+                        return _abort_result(base_sample, cc_error, item_id)
                 grade = await runtime.grade_sandbox(
                     sandbox_id=sandbox.sandbox_id,
                     package_dir=metadata["package_dir"],

@@ -28,7 +28,7 @@ from types import SimpleNamespace
 import pytest
 
 import slime.agent.sandbox as sandbox_mod
-from slime.agent.sandbox import exec_and_wait
+from slime.agent.sandbox import E2BSandbox, exec_and_wait
 
 NUM_GPUS = 0
 
@@ -161,6 +161,47 @@ def test_transport_retry_of_the_spawn_stays_deduped(fast_marker_polls):
     # The per-invocation cleanup must NOT ride inside the guarded spawn —
     # behind the guard it never runs on a replayed tag.
     assert not any("rm -" in c and "setsid" in c for c in sb.exec_log)
+
+
+@pytest.mark.unit
+def test_closed_resource_error_retries_idempotent_rpc(monkeypatch):
+    class ClosedResourceError(Exception):
+        pass
+
+    attempts = 0
+    sandbox = E2BSandbox("unused", image_metadata_key="image", rpc_retries=2)
+
+    async def operation():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ClosedResourceError("stream closed")
+        return "ok"
+
+    async def no_backoff(_seconds):
+        return None
+
+    monkeypatch.setattr(sandbox_mod.asyncio, "sleep", no_backoff)
+    assert asyncio.run(sandbox._rpc_retry("read", operation)) == "ok"
+    assert attempts == 2
+
+
+@pytest.mark.unit
+def test_closed_resource_error_does_not_replay_non_idempotent_rpc():
+    class ClosedResourceError(Exception):
+        pass
+
+    attempts = 0
+    sandbox = E2BSandbox("unused", image_metadata_key="image", rpc_retries=6)
+
+    async def operation():
+        nonlocal attempts
+        attempts += 1
+        raise ClosedResourceError("stream closed")
+
+    with pytest.raises(ClosedResourceError):
+        asyncio.run(sandbox._rpc_retry("spawn", operation, idempotent=False))
+    assert attempts == 1
 
 
 if __name__ == "__main__":

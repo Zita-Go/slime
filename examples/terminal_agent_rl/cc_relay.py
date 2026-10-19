@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import secrets
 from pathlib import Path
 
 import aiohttp
 
 from slime.agent.sandbox import Sandbox
+
+logger = logging.getLogger(__name__)
 
 RELAY_ROOT = "/tmp/slime-cc-relay"
 RELAY_PORT = 18080
@@ -98,6 +101,10 @@ ThreadingHTTPServer(("127.0.0.1", 18080), Handler).serve_forever()
 '''
 
 
+class E2BRelayError(RuntimeError):
+    """The sandbox pull relay can no longer deliver a model response."""
+
+
 class E2BPullRelay:
     """Host主动轮询E2B请求文件，避免sandbox需要访问集群私网。"""
 
@@ -111,6 +118,8 @@ class E2BPullRelay:
         self._poll_task: asyncio.Task | None = None
         self._forward_tasks: set[asyncio.Task] = set()
         self._seen: set[str] = set()
+        self._failure: BaseException | None = None
+        self._failure_event = asyncio.Event()
 
     async def __aenter__(self) -> E2BPullRelay:
         await self.sandbox.write_file(f"{RELAY_ROOT}/proxy.py", SANDBOX_PROXY)
@@ -134,6 +143,7 @@ class E2BPullRelay:
         else:
             raise RuntimeError("sandbox Claude Code relay did not become ready")
         self._poll_task = asyncio.create_task(self._poll_loop(), name="e2b-cc-pull-relay")
+        self._poll_task.add_done_callback(self._poll_done)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -149,6 +159,31 @@ class E2BPullRelay:
             timeout=15,
             check=False,
         )
+
+    async def wait_failure(self) -> None:
+        """Raise promptly when a background poll/forward task fails permanently."""
+
+        await self._failure_event.wait()
+        assert self._failure is not None
+        raise E2BRelayError("Claude Code E2B pull relay failed") from self._failure
+
+    def _record_failure(self, error: BaseException) -> None:
+        if self._failure is None:
+            self._failure = error
+            self._failure_event.set()
+
+    def _poll_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:  # noqa: BLE001 - wake the rollout waiting on relay health
+            self._record_failure(exc)
+            logger.exception("Claude Code relay polling failed")
+        else:
+            error = RuntimeError("Claude Code relay polling stopped unexpectedly")
+            self._record_failure(error)
+            logger.error("%s", error)
 
     async def _poll_loop(self) -> None:
         # Wait inside the sandbox for at most 30 seconds per RPC.  Polling from
@@ -173,9 +208,19 @@ class E2BPullRelay:
                     self._seen.add(request_id)
                     task = asyncio.create_task(self._forward(request_id), name=f"cc-relay-{request_id}")
                     self._forward_tasks.add(task)
-                    task.add_done_callback(self._forward_tasks.discard)
+                    task.add_done_callback(self._forward_done)
             if code != 0:
                 await asyncio.sleep(self.poll_interval_sec)
+
+    def _forward_done(self, task: asyncio.Task) -> None:
+        self._forward_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:  # noqa: BLE001 - wake the rollout waiting on relay health
+            self._record_failure(exc)
+            logger.exception("Claude Code relay response publication failed")
 
     async def _forward(self, request_id: str) -> None:
         request_path = f"{RELAY_ROOT}/requests/{request_id}.json"
@@ -212,11 +257,15 @@ class E2BPullRelay:
                     json.dumps({"type": "error", "error": {"type": type(exc).__name__}}).encode()
                 ).decode("ascii"),
             }
+        response_path = f"{RELAY_ROOT}/responses/{request_id}.json"
         temporary = f"{RELAY_ROOT}/responses/.{request_id}-{secrets.token_hex(4)}.json"
         await self.sandbox.write_file(temporary, json.dumps(result, separators=(",", ":")))
+        # Publishing is idempotent even when the first mv completed but its RPC
+        # acknowledgement was lost: a retry observes the final file and
+        # succeeds instead of trying to move an already-consumed temporary.
         await self.sandbox.exec(
-            f"mv {temporary} {RELAY_ROOT}/responses/{request_id}.json",
+            f"if test -f {response_path}; then rm -f {temporary}; else mv {temporary} {response_path}; fi",
             timeout=15,
             check=True,
-            idempotent=False,
+            idempotent=True,
         )

@@ -219,6 +219,13 @@ class E2BSandbox:
             "PoolTimeout",
             "RemoteProtocolError",
             "SSLError",
+            # anyio memory/object streams used by the E2B SDK may close while
+            # the underlying HTTP connection is being recycled.  These are
+            # transport failures just like httpcore.ReadError; replay remains
+            # restricted to idempotent operations by _rpc_retry.
+            "ClosedResourceError",
+            "BrokenResourceError",
+            "EndOfStream",
         }
     )
 
