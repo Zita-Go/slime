@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = "/tmp/slime-cc-relay"
 REQUESTS = ROOT + "/requests"
 RESPONSES = ROOT + "/responses"
+CONSUMED = ROOT + "/consumed"
 TIMEOUT = int(os.environ.get("SLIME_CC_RELAY_REQUEST_TIMEOUT_SEC", "1800"))
 
 
@@ -84,8 +85,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         with open(response_path, encoding="utf-8") as stream:
             response = json.load(stream)
-        os.unlink(response_path)
         response_body = base64.b64decode(response["body_b64"])
+        # 先留下持久的小凭据再删除响应，RPC丢确认后的发布重试仍能识别已消费。
+        # 这里只确认代理已接管，不表示HTTP客户端已经接收完成。
+        atomic_json(CONSUMED + "/" + request_id + ".json", {"id": request_id})
+        os.unlink(response_path)
         self.send_response(int(response["status"]))
         for key, value in response.get("headers", {}).items():
             if key.lower() in {"content-type", "cache-control"}:
@@ -97,6 +101,7 @@ class Handler(BaseHTTPRequestHandler):
 
 os.makedirs(REQUESTS, exist_ok=True)
 os.makedirs(RESPONSES, exist_ok=True)
+os.makedirs(CONSUMED, exist_ok=True)
 ThreadingHTTPServer(("127.0.0.1", 18080), Handler).serve_forever()
 '''
 
@@ -124,7 +129,7 @@ class E2BPullRelay:
     async def __aenter__(self) -> E2BPullRelay:
         await self.sandbox.write_file(f"{RELAY_ROOT}/proxy.py", SANDBOX_PROXY)
         await self.sandbox.exec(
-            f"mkdir -p {RELAY_ROOT}/requests {RELAY_ROOT}/responses; "
+            f"mkdir -p {RELAY_ROOT}/requests {RELAY_ROOT}/responses {RELAY_ROOT}/consumed; "
             f"setsid python3 {RELAY_ROOT}/proxy.py > {RELAY_ROOT}/proxy.log 2>&1 & echo $! > {RELAY_ROOT}/proxy.pid",
             user="root",
             timeout=30,
@@ -258,13 +263,14 @@ class E2BPullRelay:
                 ).decode("ascii"),
             }
         response_path = f"{RELAY_ROOT}/responses/{request_id}.json"
+        consumed_path = f"{RELAY_ROOT}/consumed/{request_id}.json"
         temporary = f"{RELAY_ROOT}/responses/.{request_id}-{secrets.token_hex(4)}.json"
         await self.sandbox.write_file(temporary, json.dumps(result, separators=(",", ":")))
-        # Publishing is idempotent even when the first mv completed but its RPC
-        # acknowledgement was lost: a retry observes the final file and
-        # succeeds instead of trying to move an already-consumed temporary.
+        # 正式响应会被消费者删除，不能单独充当发布完成凭据。
+        # consumed记录保留至sandbox销毁，覆盖“已消费后才重试”的丢确认窗口。
+        # 两个凭据都没有时仍须成功mv，不能吞掉真实的数据丢失。
         await self.sandbox.exec(
-            f"if test -f {response_path}; then rm -f {temporary}; else mv {temporary} {response_path}; fi",
+            f"if test -f {response_path} || test -f {consumed_path}; then rm -f {temporary}; else mv {temporary} {response_path}; fi",
             timeout=15,
             check=True,
             idempotent=True,

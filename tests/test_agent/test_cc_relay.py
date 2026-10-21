@@ -3,16 +3,176 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import base64
+from collections import Counter
 import json
+from pathlib import Path
+import threading
+from types import SimpleNamespace
+import urllib.request
 
+import httpx
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from examples.terminal_agent_rl.cc_relay import E2BPullRelay, E2BRelayError, RELAY_ROOT, SANDBOX_PROXY
+from slime.agent.sandbox import E2BSandbox
 
 NUM_GPUS = 0
+
+
+class LocalRPCSandbox(E2BSandbox):
+    """真实shell与生产RPC重试，仅注入确认丢失；不需要E2B服务或GPU。"""
+
+    rpc_backoff_base_sec = 0
+    rpc_backoff_cap_sec = 0
+
+    def __init__(self, root: Path, *, lose_publish_ack: bool = False, lose_payload: bool = False):
+        super().__init__("local-diagnostic", rpc_retries=2)
+        self.root = root
+        self.lose_publish_ack = lose_publish_ack
+        self.lose_payload = lose_payload
+        self.publish_attempts = Counter()
+
+    def local_path(self, path: str) -> Path:
+        return self.root / Path(path).relative_to(RELAY_ROOT)
+
+    async def read_file(self, path, **_kwargs):
+        return self.local_path(path).read_text()
+
+    async def write_file(self, path, content, **_kwargs):
+        local = self.local_path(path)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(content)
+        if self.lose_payload and "/responses/." in path:
+            local.unlink()
+
+    async def _reset_conn_pool(self):
+        # 本地替身没有连接池；生产重试状态机保持不变。
+        pass
+
+    async def exec(self, command, **kwargs):
+        async def execute():
+            process = await asyncio.create_subprocess_exec(
+                "bash",
+                "-c",
+                command.replace(RELAY_ROOT, str(self.root)),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode and kwargs.get("check"):
+                raise RuntimeError(stderr.decode())
+            if command.startswith("if test -f "):
+                response = self.local_path(command.split()[3].rstrip(";"))
+                self.publish_attempts[response.stem] += 1
+                if self.lose_publish_ack and self.publish_attempts[response.stem] == 1:
+                    deadline = asyncio.get_running_loop().time() + 3
+                    while response.exists() and asyncio.get_running_loop().time() < deadline:
+                        await asyncio.sleep(0.005)
+                    assert not response.exists(), "真实代理尚未消费响应"
+                    raise httpx.ReadError("injected: publish completed but RPC ACK lost")
+            return process.returncode, stdout.decode(), stderr.decode()
+
+        return await self._rpc_retry("exec", execute, idempotent=kwargs.get("idempotent", True))
+
+
+@pytest.fixture
+def local_proxy(tmp_path):
+    # 执行生产代理的类/函数，跳过顶层serve_forever，以临时目录和空闲端口运行。
+    tree = ast.parse(SANDBOX_PROXY)
+    tree.body = [node for node in tree.body if not isinstance(node, ast.Expr)]
+    namespace = {}
+    exec(compile(tree, "<sandbox-proxy>", "exec"), namespace)
+    namespace["ROOT"] = str(tmp_path)
+    for name in ("REQUESTS", "RESPONSES", "CONSUMED"):
+        namespace[name] = str(tmp_path / name.lower())
+        Path(namespace[name]).mkdir()
+    real_os = namespace["os"]
+
+    def checked_unlink(path):
+        # 不允许在写入消费凭据前先删除响应，否则仍有无凭据的竞态窗口。
+        marker = tmp_path / "consumed" / Path(path).name
+        assert json.loads(marker.read_text()) == {"id": Path(path).stem}
+        return real_os.unlink(path)
+
+    namespace["os"] = SimpleNamespace(**vars(real_os))
+    namespace["os"].unlink = checked_unlink
+    server = namespace["ThreadingHTTPServer"](("127.0.0.1", 0), namespace["Handler"], bind_and_activate=False)
+    server.request_queue_size = 32
+    server.server_bind()
+    server.server_activate()
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("concurrency", [1, 8])
+def test_publish_retry_after_real_proxy_consumption(local_proxy, tmp_path, concurrency):
+    async def run_case():
+        upstream_calls = []
+
+        async def messages(request):
+            body = await request.json()
+            upstream_calls.append(body["index"])
+            return web.json_response({"index": body["index"], "text": "DELIVERED"})
+
+        def request(index):
+            message = urllib.request.Request(
+                local_proxy + "/v1/messages",
+                data=json.dumps({"index": index}).encode(),
+                headers={"content-type": "application/json"},
+            )
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(message, timeout=5) as response:
+                assert response.status == 200
+                return json.load(response)
+
+        app = web.Application()
+        app.router.add_post("/v1/messages", messages)
+        sandbox = LocalRPCSandbox(tmp_path, lose_publish_ack=True)
+        async with TestServer(app, shutdown_timeout=0.1) as upstream:
+            relay = E2BPullRelay(sandbox, str(upstream.make_url("/")).rstrip("/"))
+            clients = [asyncio.create_task(asyncio.to_thread(request, i)) for i in range(concurrency)]
+            try:
+                deadline = asyncio.get_running_loop().time() + 3
+                while len(list((tmp_path / "requests").glob("*.json"))) < concurrency:
+                    assert asyncio.get_running_loop().time() < deadline
+                    await asyncio.sleep(0.005)
+                request_ids = [p.stem for p in (tmp_path / "requests").glob("*.json")]
+                await asyncio.gather(*(relay._forward(sid) for sid in request_ids))
+                received = await asyncio.gather(*clients)
+            finally:
+                await asyncio.gather(*clients, return_exceptions=True)
+        assert sorted(upstream_calls) == list(range(concurrency)), "重试不得重新请求模型"
+        assert sorted(received, key=lambda r: r["index"]) == [{"index": i, "text": "DELIVERED"} for i in range(concurrency)]
+        assert sandbox.publish_attempts == Counter({sid: 2 for sid in request_ids})
+        assert not list((tmp_path / "responses").iterdir())
+        for sid in request_ids:
+            assert json.loads((tmp_path / "consumed" / f"{sid}.json").read_text()) == {"id": sid}
+
+    asyncio.run(asyncio.wait_for(run_case(), timeout=15))
+
+
+def test_publish_missing_payload_is_not_silently_accepted(tmp_path):
+    async def run_case():
+        sandbox = LocalRPCSandbox(tmp_path, lose_payload=True)
+        await sandbox.write_file(f"{RELAY_ROOT}/requests/missing.json", "not-json")
+        (tmp_path / "consumed").mkdir()
+        (tmp_path / "consumed/other-request.json").write_text("{}")
+        relay = E2BPullRelay(sandbox, "http://127.0.0.1:1")
+        with pytest.raises(RuntimeError, match="cannot stat"):
+            await relay._forward("missing")
+
+    asyncio.run(run_case())
 
 
 class MemorySandbox:
@@ -35,9 +195,10 @@ class MemorySandbox:
         elif command.startswith("if test -f "):
             parts = command.split()
             destination = parts[3].rstrip(";")
-            source = parts[7].rstrip(";")
-            assert parts[10] == source and parts[11].rstrip(";") == destination
-            if destination in self.files:
+            consumed = parts[7].rstrip(";")
+            source = parts[11].rstrip(";")
+            assert parts[14] == source and parts[15].rstrip(";") == destination
+            if destination in self.files or consumed in self.files:
                 self.files.pop(source, None)
             else:
                 self.files[destination] = self.files.pop(source)
