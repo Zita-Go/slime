@@ -25,7 +25,10 @@ import re
 import shlex
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
 import slime.agent.sandbox as sandbox_mod
 from slime.agent.sandbox import E2BSandbox, exec_and_wait
@@ -202,6 +205,122 @@ def test_closed_resource_error_does_not_replay_non_idempotent_rpc():
     with pytest.raises(ClosedResourceError):
         asyncio.run(sandbox._rpc_retry("spawn", operation, idempotent=False))
     assert attempts == 1
+
+
+@pytest.mark.parametrize("same_sandbox", [True, False])
+def test_retry_does_not_close_pool_used_by_another_inflight_rpc(same_sandbox):
+    async def run_case():
+        closed = False
+
+        async def close_pool():
+            nonlocal closed
+            closed = True
+
+        shared_sdk = SimpleNamespace(_transport=SimpleNamespace(pool=SimpleNamespace(aclose=close_pool)))
+        retrying = E2BSandbox("unused", rpc_retries=2)
+        retrying._sb = shared_sdk
+        retrying.rpc_backoff_base_sec = 0
+        retrying.rpc_backoff_cap_sec = 0
+        other = retrying if same_sandbox else E2BSandbox("other", rpc_retries=2)
+        other._sb = shared_sdk
+        started = asyncio.Event()
+        release = asyncio.Event()
+        attempts = 0
+        other_calls = 0
+
+        async def inflight_operation():
+            nonlocal other_calls
+            other_calls += 1
+            started.set()
+            await release.wait()
+            if closed:
+                raise httpx.ReadError("shared pool closed under an unrelated RPC")
+            return "uninterrupted"
+
+        async def failing_operation():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ReadError("one RPC failed")
+            return "recovered"
+
+        task = asyncio.create_task(other._rpc_retry("spawn", inflight_operation, idempotent=False))
+        try:
+            await started.wait()
+            assert await retrying._rpc_retry("publish", failing_operation) == "recovered"
+        finally:
+            release.set()
+        assert await task == "uninterrupted"
+        assert attempts == 2 and other_calls == 1
+        assert not closed
+
+    asyncio.run(run_case())
+
+
+def test_exhausted_rpc_retries_raise_without_closing_shared_pool():
+    attempts = 0
+    closures = 0
+    sandbox = E2BSandbox("unused", rpc_retries=3)
+    sandbox.rpc_backoff_base_sec = 0
+    sandbox.rpc_backoff_cap_sec = 0
+
+    async def close_pool():
+        nonlocal closures
+        closures += 1
+
+    sandbox._sb = SimpleNamespace(_transport=SimpleNamespace(pool=SimpleNamespace(aclose=close_pool)))
+
+    async def operation():
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadError("permanent transport failure")
+
+    with pytest.raises(httpx.ReadError, match="permanent transport failure"):
+        asyncio.run(sandbox._rpc_retry("read", operation))
+    assert attempts == 3 and closures == 0
+
+
+def test_retry_recovers_disconnected_connection_without_interrupting_other_request():
+    async def run_case():
+        inflight_started = asyncio.Event()
+        release = asyncio.Event()
+        requests = 0
+
+        async def inflight(_request):
+            inflight_started.set()
+            await release.wait()
+            return web.Response(text="uninterrupted")
+
+        async def disconnect_once(request):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                request.transport.close()
+            return web.Response(text="reconnected")
+
+        app = web.Application()
+        app.router.add_get("/inflight", inflight)
+        app.router.add_get("/flaky", disconnect_once)
+        sandbox = E2BSandbox("unused", rpc_retries=2)
+        sandbox.rpc_backoff_base_sec = 0
+        sandbox.rpc_backoff_cap_sec = 0
+        async with TestServer(app, shutdown_timeout=0.1) as server, httpx.AsyncClient(trust_env=False) as client:
+            sandbox._sb = SimpleNamespace(_transport=SimpleNamespace(pool=client._transport._pool))
+            other = asyncio.create_task(sandbox._rpc_retry(
+                "spawn", lambda: client.get(str(server.make_url("/inflight"))), idempotent=False,
+            ))
+            try:
+                await inflight_started.wait()
+                recovered = await sandbox._rpc_retry("read", lambda: client.get(str(server.make_url("/flaky"))))
+                assert recovered.status_code == 200 and recovered.text == "reconnected"
+            finally:
+                release.set()
+                outcomes = await asyncio.gather(other, return_exceptions=True)
+            assert not isinstance(outcomes[0], BaseException)
+            assert outcomes[0].text == "uninterrupted"
+        assert requests == 2
+
+    asyncio.run(asyncio.wait_for(run_case(), timeout=10))
 
 
 if __name__ == "__main__":

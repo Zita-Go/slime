@@ -262,7 +262,8 @@ class E2BSandbox:
                     raise
                 last_err = e
                 if attempt + 1 < self.rpc_retries:
-                    await self._reset_conn_pool()
+                    # SDK transport可能由同一事件循环内的多个sandbox共享。
+                    # 此处关闭整个池会中断无关的在途RPC；失败连接由transport回收。
                     ceiling = min(self.rpc_backoff_cap_sec, self.rpc_backoff_base_sec * (2**attempt))
                     backoff = random.uniform(0.0, ceiling)
                     logger.debug(
@@ -277,14 +278,6 @@ class E2BSandbox:
                     await asyncio.sleep(backoff)
         assert last_err is not None
         raise last_err
-
-    async def _reset_conn_pool(self) -> None:
-        """Tear down the sandbox's httpcore pool so the next RPC reconnects."""
-        try:
-            pool = self._sb._transport.pool  # httpcore.AsyncConnectionPool
-            await pool.aclose()
-        except Exception as e:
-            logger.debug("[agent.sandbox] conn-pool reset skipped: %s", e)
 
     async def __aenter__(self) -> E2BSandbox:
         if self.image_metadata_key is None:

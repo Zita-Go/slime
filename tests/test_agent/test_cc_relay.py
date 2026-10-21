@@ -49,10 +49,6 @@ class LocalRPCSandbox(E2BSandbox):
         if self.lose_payload and "/responses/." in path:
             local.unlink()
 
-    async def _reset_conn_pool(self):
-        # 本地替身没有连接池；生产重试状态机保持不变。
-        pass
-
     async def exec(self, command, **kwargs):
         async def execute():
             process = await asyncio.create_subprocess_exec(

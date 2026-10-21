@@ -43,6 +43,12 @@ CC运行在E2B sandbox内，必须通过AnthropicAdapter访问rollout策略，�
 - 凭据只表示sandbox代理已接管响应，不宣称Claude Code客户端已收到全部HTTP字节。保留到sandbox销毁，避免过早清理再次破坏重试语义；凭据不保存响应正文，不重新执行模型生成。
 - CPU回归须覆盖真实代理消费与RPC确认丢失同时发生、并发请求隔离、真正缺失的响应，以及原有异常上浮。训练预算与网络入口不变。
 
+### 并发RPC重试的连接池所有权
+
+固定E2B SDK按事件循环缓存transport，同一worker内多个sandbox的文件、命令和轮询RPC可能共享一个池。单个RPC失败时调用`pool.aclose()`会中断其它在途操作，继而引发连锁重试，非幂等命令还会直接ABORTED。
+
+单次RPC重试不拥有整个池的生命周期，禁止关闭共享池或修改SDK私有transport。仅重试已证明幂等的失败操作，保持退避、次数上限与非幂等操作单次执行规则；具体失败连接/stream的失效与回收由HTTP transport处理。不能通过串行化所有RPC规避问题或扩大训练预算。回归须覆盖同sandbox和跨sandbox共享池、重试耗尽仍上浮，以及真实E2B消费后丢确认场景。
+
 ## 验收门槛
 
 1. 固定Node/CC包在真实NexTask模板中安装，`claude --version`精确为2.1.193，sandbox清理确认。
